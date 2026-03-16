@@ -1,0 +1,81 @@
+{
+  "name": "pageindex",
+  "version": "1.0.0",
+  "description": "Vectorless, reasoning-based RAG for document understanding. Multi-runtime (Node.js, Bun, Deno). PDF and Markdown support with OCR.",
+  "module": "dist/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "bin": {
+    "pageindex": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:cli && npm run build:types",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=node --external:openai --external:pdf-parse --external:pdf-poppler",
+    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=node --external:openai --external:pdf-parse --external:pdf-poppler",
+    "build:cli": "esbuild src/cli.ts --bundle --format=esm --outfile=dist/cli.js --platform=node --external:openai --external:pdf-parse --external:pdf-poppler --banner:js='#!/usr/bin/env node'",
+    "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:node": "node --test tests/*.test.js",
+    "benchmark": "bun run benchmarks/benchmark.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "pageindex",
+    "rag",
+    "retrieval",
+    "document",
+    "pdf",
+    "markdown",
+    "reasoning",
+    "vectorless",
+    "llm",
+    "openai",
+    "tree-index",
+    "information-retrieval",
+    "ai",
+    "ocr",
+    "nodejs",
+    "bun",
+    "deno",
+    "multi-runtime"
+  ],
+  "author": "Antonio Oliveira <antonio@oakoliver.com> (https://oakoliver.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oakoliver/pageindex.git"
+  },
+  "homepage": "https://github.com/oakoliver/pageindex#readme",
+  "bugs": {
+    "url": "https://github.com/oakoliver/pageindex/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "openai": "^6.29.0",
+    "pdf-parse": "^2.4.5",
+    "pdf-poppler": "^0.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pdf-parse": "^1.1.5",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.0.0"
+  }
+}
