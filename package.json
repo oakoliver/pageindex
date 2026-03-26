@@ -1,6 +1,6 @@
 {
   "name": "pageindex",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Vectorless, reasoning-based RAG for document understanding. Multi-runtime (Node.js, Bun, Deno). PDF and Markdown support with OCR.",
   "module": "dist/index.js",
   "main": "dist/index.js",
