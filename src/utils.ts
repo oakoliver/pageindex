@@ -322,10 +322,13 @@ export function listToTree(data: TocItem[]): TreeNode[] {
 
   for (const item of data) {
     const structure = item.structure;
+    // postProcessing() sets startIndex/endIndex on the items; fall back to
+    // physicalIndex for lists that were not post-processed
+    const ranged = item as TocItem & { startIndex?: number; endIndex?: number };
     const node: TreeNode = {
       title: item.title,
-      startIndex: item.physicalIndex,
-      endIndex: undefined,
+      startIndex: ranged.startIndex ?? item.physicalIndex,
+      endIndex: ranged.endIndex,
       nodes: [],
     };
 
@@ -405,24 +408,30 @@ export function postProcessing(
 }
 
 /**
- * Remove specified fields from structure recursively
+ * Remove specified fields from structure recursively.
+ * With maxLen, string values longer than maxLen are truncated and suffixed with "...".
  */
 export function removeFields(
   data: unknown,
-  fields: string[] = ["text"]
+  fields: string[] = ["text"],
+  maxLen?: number
 ): unknown {
   if (Array.isArray(data)) {
-    return data.map((item) => removeFields(item, fields));
+    return data.map((item) => removeFields(item, fields, maxLen));
   }
 
   if (data && typeof data === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(data)) {
       if (!fields.includes(key)) {
-        result[key] = removeFields(value, fields);
+        result[key] = removeFields(value, fields, maxLen);
       }
     }
     return result;
+  }
+
+  if (typeof data === "string" && maxLen !== undefined && data.length > maxLen) {
+    return data.slice(0, maxLen) + "...";
   }
 
   return data;
@@ -610,4 +619,128 @@ export function getLastStartPageFromText(text: string): number {
   if (matches.length === 0) return -1;
   const lastMatch = matches[matches.length - 1];
   return lastMatch && lastMatch[1] ? parseInt(lastMatch[1], 10) : -1;
+}
+
+
+// ===================== Physical index validation =====================
+
+/**
+ * A TOC entry exactly as the LLM returned it (snake_case keys, e.g.
+ * `physical_index: "<physical_index_5>"`), before normalization to TocItem.
+ */
+export type RawTocEntry = Record<string, unknown>;
+
+const PHYSICAL_INDEX_MARKER_RE = /^<physical_index_(\d+)>$/;
+
+/**
+ * Parse a physical index given as a `<physical_index_X>` marker or an integer.
+ * Returns null when the value cannot be interpreted.
+ */
+export function parsePhysicalIndex(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  const markerMatch = String(raw).trim().match(PHYSICAL_INDEX_MARKER_RE);
+  if (markerMatch && markerMatch[1]) {
+    return parseInt(markerMatch[1], 10);
+  }
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? Math.trunc(raw) : null;
+  }
+  if (typeof raw === "string" && /^\s*[+-]?\d+\s*$/.test(raw)) {
+    return parseInt(raw, 10);
+  }
+  return null;
+}
+
+/**
+ * Nullify any physical_index the LLM produced that falls outside the real page range.
+ * Valid values are converted to integers. Mutates and returns the list.
+ */
+export function validatePhysicalIndices(
+  toc: RawTocEntry[],
+  totalPages: number,
+  startIndex: number = 1
+): RawTocEntry[] {
+  if (!Array.isArray(toc)) return [];
+  const maxIdx = startIndex + totalPages - 1;
+  for (const entry of toc) {
+    const raw = entry.physical_index;
+    if (raw === null || raw === undefined) continue;
+    const val = parsePhysicalIndex(raw);
+    if (val === null || val < startIndex || val > maxIdx) {
+      entry.physical_index = null;
+    } else {
+      entry.physical_index = val;
+    }
+  }
+  return toc;
+}
+
+/**
+ * Set of physical indices whose `<physical_index_X>` markers appear in the content
+ */
+export function extractChunkMarkerSet(content: string): Set<number> {
+  const found = new Set<number>();
+  for (const match of content.matchAll(/<physical_index_(\d+)>/g)) {
+    found.add(parseInt(match[1]!, 10));
+  }
+  return found;
+}
+
+/**
+ * Nullify any physical_index that is not present in the supplied chunk.
+ * Prevents the model from referencing markers that exist elsewhere in the
+ * document but not in the current prompt. Mutates and returns the list.
+ */
+export function validateChunkPhysicalIndices(
+  toc: RawTocEntry[],
+  content: string
+): RawTocEntry[] {
+  if (!Array.isArray(toc)) return [];
+  const validIndices = extractChunkMarkerSet(content);
+  for (const entry of toc) {
+    const raw = entry.physical_index;
+    if (raw === null || raw === undefined) continue;
+    const m = String(raw).trim().match(PHYSICAL_INDEX_MARKER_RE);
+    if (!m || !validIndices.has(parseInt(m[1]!, 10))) {
+      entry.physical_index = null;
+    }
+  }
+  return toc;
+}
+
+/**
+ * Convert raw LLM TOC entries (snake_case) into TocItems (camelCase).
+ * `physical_index` markers/integers become a numeric `physicalIndex`
+ * (undefined when missing or invalid).
+ */
+export function normalizeTocItems(entries: unknown): TocItem[] {
+  if (!Array.isArray(entries)) return [];
+  const items: TocItem[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as RawTocEntry & Partial<TocItem>;
+    const item: TocItem = { title: raw.title === undefined || raw.title === null ? "" : String(raw.title) };
+    if (raw.structure !== undefined && raw.structure !== null) {
+      item.structure = String(raw.structure);
+    }
+    if (raw.page !== undefined && raw.page !== null) {
+      item.page = raw.page as number;
+    }
+    const physical = parsePhysicalIndex(
+      raw.physicalIndex !== undefined ? raw.physicalIndex : raw.physical_index
+    );
+    if (physical !== null) {
+      item.physicalIndex = physical;
+    }
+    const appearStart = raw.appearStart ?? raw.appear_start;
+    if (typeof appearStart === "string") {
+      item.appearStart = appearStart;
+    }
+    const listIndex = raw.listIndex ?? raw.list_index;
+    if (typeof listIndex === "number") {
+      item.listIndex = listIndex;
+    }
+    items.push(item);
+  }
+  return items;
 }

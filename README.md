@@ -2,6 +2,8 @@
 
 Bun-native vectorless, reasoning-based RAG for document understanding. A TypeScript port of [PageIndex](https://github.com/VectifyAI/PageIndex) optimized for the Bun runtime.
 
+> **Upstream parity:** the standard (LLM) PDF pipeline and the Markdown pipeline are at parity with upstream PageIndex **v0.2.19** (2026-09-21). Previous baseline: upstream commit `959452d` (2026-03-04). Upstream-only surfaces that are not ported: PageIndex Flash (the deterministic PDF parser), the LLM-driven `optimize_tree` expand pass, the local/cloud SDK clients, chat/agent tools, MCP bridge and LiteLLM provider routing (this port stays on OpenAI-compatible endpoints).
+
 ## Features
 
 - **Vectorless RAG**: Uses LLM reasoning to build hierarchical document indices without vector databases
@@ -133,8 +135,11 @@ bun-pageindex --pdf document.pdf --lmstudio --model llama3
 # Process scanned PDF with OCR
 bun-pageindex --pdf scanned.pdf --ocr --lmstudio --model qwen/qwen3-vl-30b
 
-# Process markdown with options
-bun-pageindex --md README.md --add-doc-description --thinning
+# Process markdown with options (Markdown runs no LLM passes unless asked)
+bun-pageindex --md README.md --add-node-summary --add-doc-description --thinning
+
+# Separate models for indexing and summaries
+bun-pageindex --pdf document.pdf --index-model gpt-5.6-luna --summary-model gpt-4.1-mini
 
 # See all options
 bun-pageindex --help
@@ -149,7 +154,8 @@ const pageIndex = new PageIndex(options);
 ```
 
 **Options:**
-- `model`: LLM model to use (default: "gpt-4o-2024-11-20")
+- `model`: Model used to index the document (default: "gpt-5.6-luna", upstream's default index model)
+- `summaryModel`: Model for node summaries and the document description (default: `model`)
 - `apiKey`: OpenAI API key (default: from OPENAI_API_KEY env var)
 - `baseUrl`: Custom API base URL (for LM Studio, Ollama, etc.)
 - `tocCheckPageNum`: Pages to check for TOC (default: 20)
@@ -181,6 +187,8 @@ const pageIndex = new PageIndex(options);
 const result = await mdToTree(path, options);
 ```
 
+Lines consisting only of bold text (`**Heading**`) are treated as level-1 headings, and the result includes `lineCount`.
+
 **Additional Options:**
 - `thinning`: Apply tree thinning (default: false)
 - `thinningThreshold`: Min tokens for thinning (default: 5000)
@@ -192,6 +200,7 @@ const result = await mdToTree(path, options);
 interface PageIndexResult {
   docName: string;
   docDescription?: string;
+  lineCount?: number; // markdown only
   structure: TreeNode[];
 }
 
@@ -204,9 +213,18 @@ interface TreeNode {
   prefixSummary?: string;
   text?: string;
   lineNum?: number;
+  keyItems?: string[]; // titles folded into this node by the tree merge pass
   nodes?: TreeNode[];
 }
 ```
+
+### Behavior notes (upstream v0.2.19)
+
+- **Prompt-injection hardening**: document text is sanitized (known injection phrases are redacted) and wrapped in `<user_document>` delimiters before it reaches the LLM, and document-bearing prompts carry a hardening preamble.
+- **Physical index validation**: page markers returned by the LLM are dropped when they are not in the chunk the model saw or fall outside the document; TOC entries that end up unplaced are left out of the tree.
+- **Tree merge**: after the tree is built, subtrees whose structure does not beat a linear scan of their pages are collapsed into their parent; the removed titles are kept as `keyItems`.
+- **Fail-loud LLM errors**: 400/401/403/404 are not retried; exhausted retries throw `LLMRetriesExhausted` instead of returning `"Error"`. Bad credentials or a missing model fail the run; per-prompt failures (e.g. context overflow) leave an empty summary/description; if every summary comes back empty the run fails.
+- `temperature` is no longer sent unless you pass one explicitly; `CHATGPT_API_KEY` is accepted as a deprecated alias for `OPENAI_API_KEY`.
 
 ## Benchmarks
 

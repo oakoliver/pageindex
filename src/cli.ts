@@ -7,6 +7,7 @@
 import { parseArgs } from "util";
 import { PageIndex } from "./pageindex";
 import { mdToTree } from "./markdown";
+import { DEFAULT_INDEX_MODEL } from "./types";
 import * as path from "path";
 import * as fs from "fs";
 import * as fsp from "fs/promises";
@@ -15,11 +16,13 @@ interface CliArgs {
   pdf?: string;
   md?: string;
   model: string;
+  summaryModel?: string;
   tocCheckPages: number;
   maxPagesPerNode: number;
   maxTokensPerNode: number;
   addNodeId: boolean;
-  addNodeSummary: boolean;
+  /** undefined = not given (PDF: on, Markdown: off) */
+  addNodeSummary?: boolean;
   addDocDescription: boolean;
   addNodeText: boolean;
   thinning: boolean;
@@ -51,7 +54,9 @@ OPTIONS:
   --output, -o <path>          Output file path (default: ./results/<name>_structure.json)
   
   MODEL OPTIONS:
-  --model <name>               Model to use (default: gpt-4o-2024-11-20)
+  --index-model <name>         Model used to index the document (default: ${DEFAULT_INDEX_MODEL})
+  --model <name>               (legacy) Same as --index-model
+  --summary-model <name>       Model for node summaries and doc description (default: index model)
   --lmstudio                   Use LM Studio (localhost:1234)
   --ollama                     Use Ollama (localhost:11434)
   --base-url <url>             Custom OpenAI-compatible API URL
@@ -75,7 +80,7 @@ OPTIONS:
   OUTPUT OPTIONS:
   --add-node-id                Add node IDs (default: true)
   --no-node-id                 Don't add node IDs
-  --add-node-summary           Add node summaries (default: true)
+  --add-node-summary           Add node summaries (default: on for PDF, off for Markdown)
   --no-node-summary            Don't add node summaries
   --add-doc-description        Add document description
   --add-node-text              Include raw text in output
@@ -97,13 +102,15 @@ function parseCliArgs(): CliArgs {
     options: {
       pdf: { type: "string" },
       md: { type: "string" },
-      model: { type: "string", default: "gpt-4o-2024-11-20" },
+      model: { type: "string" },
+      "index-model": { type: "string" },
+      "summary-model": { type: "string" },
       "toc-check-pages": { type: "string", default: "20" },
       "max-pages-per-node": { type: "string", default: "10" },
       "max-tokens-per-node": { type: "string", default: "20000" },
       "add-node-id": { type: "boolean", default: true },
       "no-node-id": { type: "boolean", default: false },
-      "add-node-summary": { type: "boolean", default: true },
+      "add-node-summary": { type: "boolean" },
       "no-node-summary": { type: "boolean", default: false },
       "add-doc-description": { type: "boolean", default: false },
       "add-node-text": { type: "boolean", default: false },
@@ -127,12 +134,13 @@ function parseCliArgs(): CliArgs {
   return {
     pdf: values.pdf,
     md: values.md,
-    model: values.model || "gpt-4o-2024-11-20",
+    model: values["index-model"] || values.model || DEFAULT_INDEX_MODEL,
+    summaryModel: values["summary-model"],
     tocCheckPages: parseInt(values["toc-check-pages"] || "20", 10),
     maxPagesPerNode: parseInt(values["max-pages-per-node"] || "10", 10),
     maxTokensPerNode: parseInt(values["max-tokens-per-node"] || "20000", 10),
     addNodeId: values["no-node-id"] ? false : (values["add-node-id"] ?? true),
-    addNodeSummary: values["no-node-summary"] ? false : (values["add-node-summary"] ?? true),
+    addNodeSummary: values["no-node-summary"] ? false : values["add-node-summary"],
     addDocDescription: values["add-doc-description"] ?? false,
     addNodeText: values["add-node-text"] ?? false,
     thinning: values.thinning ?? false,
@@ -204,11 +212,12 @@ async function main(): Promise<void> {
     // Create PageIndex instance
     const pageIndex = new PageIndex({
       model: args.model,
+      summaryModel: args.summaryModel,
       tocCheckPageNum: args.tocCheckPages,
       maxPageNumEachNode: args.maxPagesPerNode,
       maxTokenNumEachNode: args.maxTokensPerNode,
       addNodeId: args.addNodeId,
-      addNodeSummary: args.addNodeSummary,
+      addNodeSummary: args.addNodeSummary ?? true,
       addDocDescription: args.addDocDescription,
       addNodeText: args.addNodeText,
       // OCR options
@@ -246,10 +255,12 @@ async function main(): Promise<void> {
     console.log(`Processing Markdown: ${mdPath}`);
 
     // Process Markdown
+    // Markdown runs no LLM passes unless asked: summaries are off by default
     result = await mdToTree(mdPath, {
       model: args.model,
+      summaryModel: args.summaryModel,
       addNodeId: args.addNodeId,
-      addNodeSummary: args.addNodeSummary,
+      addNodeSummary: args.addNodeSummary ?? false,
       addDocDescription: args.addDocDescription,
       addNodeText: args.addNodeText,
       thinning: args.thinning,

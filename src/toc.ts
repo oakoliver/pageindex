@@ -6,7 +6,15 @@
 import { chatGPT, chatGPTWithFinishReason, type ClientConfig } from "./openai";
 import type { PdfPage } from "./pdf";
 import type { TocItem, TocCheckResult } from "./types";
-import { extractJson, getJsonContent, countTokens, convertPhysicalIndexToInt, convertPageToInt } from "./utils";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import {
+  extractJson,
+  convertPhysicalIndexToInt,
+  convertPageToInt,
+  normalizeTocItems,
+  validateChunkPhysicalIndices,
+  type RawTocEntry,
+} from "./utils";
 import * as prompts from "./prompts";
 
 export interface TocOptions {
@@ -129,10 +137,33 @@ export async function tocExtractor(
   };
 }
 
+/** Max continuation rounds for truncated TOC generations */
+const MAX_CONTINUATION_ATTEMPTS = 5;
+
+/**
+ * Check if TOC extraction is complete (all main sections of the document are listed)
+ */
+export async function checkTocExtractionComplete(
+  content: string,
+  toc: string,
+  options: TocOptions
+): Promise<boolean> {
+  const prompt = prompts.checkTocExtractionCompletePrompt(content, toc);
+  const response = await chatGPT({
+    model: options.model,
+    prompt,
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
+  });
+
+  const json = extractJson<{ completed?: string }>(response);
+  return (json?.completed ?? "no") === "yes";
+}
+
 /**
  * Check if TOC transformation is complete
  */
-async function checkTocTransformationComplete(
+export async function checkTocTransformationComplete(
   rawToc: string,
   cleanedToc: string,
   options: TocOptions
@@ -145,12 +176,94 @@ async function checkTocTransformationComplete(
     baseUrl: options.baseUrl,
   });
 
-  const json = extractJson<{ completed: string }>(response);
-  return json?.completed === "yes";
+  const json = extractJson<{ completed?: string }>(response);
+  return (json?.completed ?? "no") === "yes";
 }
 
 /**
- * Transform raw TOC content to JSON structure
+ * Extract the full TOC text from raw content with the LLM.
+ * Truncated generations are continued in the same conversation (chat history)
+ * for at most MAX_CONTINUATION_ATTEMPTS rounds, then an error is thrown.
+ */
+export async function extractTocContent(
+  content: string,
+  options: TocOptions
+): Promise<string> {
+  const prompt = prompts.extractTocContentPrompt(content);
+  const first = await chatGPTWithFinishReason({
+    model: options.model,
+    prompt,
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
+  });
+  let response = first.content;
+  let finishReason = first.finishReason;
+
+  let isComplete = await checkTocTransformationComplete(content, response, options);
+  if (isComplete && finishReason === "finished") {
+    return response;
+  }
+
+  const chatHistory: ChatCompletionMessageParam[] = [
+    { role: "user", content: prompt },
+    { role: "assistant", content: response },
+  ];
+  const continuePrompt = prompts.TOC_EXTRACTION_CONTINUE_PROMPT;
+
+  for (let attempt = 0; attempt < MAX_CONTINUATION_ATTEMPTS; attempt++) {
+    const result = await chatGPTWithFinishReason({
+      model: options.model,
+      prompt: continuePrompt,
+      chatHistory,
+      apiKey: options.apiKey,
+      baseUrl: options.baseUrl,
+    });
+    finishReason = result.finishReason;
+    response = response + result.content;
+    chatHistory.push({ role: "user", content: continuePrompt });
+    chatHistory.push({ role: "assistant", content: result.content });
+
+    isComplete = await checkTocTransformationComplete(content, response, options);
+    if (isComplete && finishReason === "finished") {
+      return response;
+    }
+  }
+
+  throw new Error("Failed to complete table of contents extraction after maximum retries");
+}
+
+/**
+ * Strip a ```json fence (as upstream get_json_content does) without otherwise
+ * trimming the text, so a truncated generation can be continued verbatim
+ */
+function stripJsonFence(response: string): string {
+  let content = response;
+  const startIdx = content.indexOf("```json");
+  if (startIdx !== -1) {
+    content = content.slice(startIdx + 7);
+  }
+  const endIdx = content.lastIndexOf("```");
+  if (endIdx !== -1) {
+    content = content.slice(0, endIdx);
+  }
+  return content.trim();
+}
+
+/**
+ * Pull table_of_contents out of a parsed transformer reply
+ */
+function tableOfContentsFrom(json: unknown): TocItem[] {
+  if (Array.isArray(json)) {
+    return convertPageToInt(normalizeTocItems(json));
+  }
+  const toc = (json as { table_of_contents?: unknown } | null)?.table_of_contents;
+  return convertPageToInt(normalizeTocItems(toc ?? []));
+}
+
+/**
+ * Transform raw TOC content to JSON structure.
+ * Truncated generations are continued in the same conversation (chat history)
+ * for at most MAX_CONTINUATION_ATTEMPTS rounds, then an error is thrown.
  */
 export async function tocTransformer(
   tocContent: string,
@@ -168,51 +281,56 @@ export async function tocTransformer(
   let isComplete = await checkTocTransformationComplete(tocContent, lastComplete, options);
   
   if (isComplete && finishReason === "finished") {
-    const json = extractJson<{ table_of_contents: TocItem[] }>(lastComplete);
-    if (json?.table_of_contents) {
-      return convertPageToInt(json.table_of_contents);
-    }
+    return tableOfContentsFrom(extractJson(lastComplete));
   }
 
-  // Handle continuation if not complete
-  lastComplete = getJsonContent(lastComplete);
-  let attempts = 0;
-  const maxAttempts = 5;
+  // Continue the generation in the same conversation
+  lastComplete = stripJsonFence(lastComplete);
+  const chatHistory: ChatCompletionMessageParam[] = [
+    { role: "user", content: prompt },
+    { role: "assistant", content: lastComplete },
+  ];
+  const continuePrompt = prompts.TOC_TRANSFORMER_CONTINUE_PROMPT;
 
-  while (!(isComplete && finishReason === "finished") && attempts < maxAttempts) {
-    // Trim to last complete object
-    const position = lastComplete.lastIndexOf("}");
-    if (position !== -1) {
-      lastComplete = lastComplete.slice(0, position + 2);
-    }
+  // Trim to last complete object
+  const position = lastComplete.lastIndexOf("}");
+  if (position !== -1) {
+    lastComplete = lastComplete.slice(0, position + 2);
+  }
 
-    const continuePrompt = prompts.tocTransformerContinuePrompt(tocContent, lastComplete);
+  let completed = false;
+  for (let attempt = 0; attempt < MAX_CONTINUATION_ATTEMPTS; attempt++) {
     const result = await chatGPTWithFinishReason({
       model: options.model,
       prompt: continuePrompt,
+      chatHistory,
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
     });
 
-    let newContent = result.content;
+    let newComplete = result.content;
     finishReason = result.finishReason;
 
-    if (newContent.startsWith("```json")) {
-      newContent = getJsonContent(newContent);
+    if (newComplete.startsWith("```json")) {
+      newComplete = stripJsonFence(newComplete);
     }
-    lastComplete = lastComplete + newContent;
+    lastComplete = lastComplete + newComplete;
+
+    chatHistory.push({ role: "user", content: continuePrompt });
+    chatHistory.push({ role: "assistant", content: newComplete });
 
     isComplete = await checkTocTransformationComplete(tocContent, lastComplete, options);
-    attempts++;
+    if (isComplete && finishReason === "finished") {
+      completed = true;
+      break;
+    }
   }
 
-  try {
-    const parsed = JSON.parse(lastComplete);
-    return convertPageToInt(parsed.table_of_contents || parsed);
-  } catch {
-    console.error("Failed to parse TOC JSON");
-    return [];
+  if (!completed) {
+    throw new Error("Failed to complete TOC transformation after maximum retries");
   }
+
+  return tableOfContentsFrom(extractJson(lastComplete));
 }
 
 /**
@@ -231,17 +349,19 @@ export async function tocIndexExtractor(
     baseUrl: options.baseUrl,
   });
 
-  const json = extractJson<TocItem[]>(response);
-  return json || [];
+  const json = extractJson<RawTocEntry[]>(response);
+  // Drop any physical_index whose marker is not in the pages we sent
+  return normalizeTocItems(validateChunkPhysicalIndices(Array.isArray(json) ? json : [], content));
 }
 
 /**
- * Generate TOC from document pages (no existing TOC)
+ * Generate TOC from document pages (no existing TOC).
+ * Returns raw LLM entries (snake_case `physical_index` markers); callers validate them.
  */
 export async function generateTocInit(
   part: string,
   options: TocOptions
-): Promise<TocItem[]> {
+): Promise<RawTocEntry[]> {
   const prompt = prompts.generateTocInitPrompt(part);
   const { content, finishReason } = await chatGPTWithFinishReason({
     model: options.model,
@@ -251,21 +371,22 @@ export async function generateTocInit(
   });
 
   if (finishReason === "finished") {
-    const json = extractJson<TocItem[]>(content);
-    return json || [];
+    const json = extractJson<RawTocEntry[]>(content);
+    return Array.isArray(json) ? json : [];
   }
   
   throw new Error(`Generation incomplete: ${finishReason}`);
 }
 
 /**
- * Continue TOC generation with previous structure
+ * Continue TOC generation with previous structure.
+ * Returns raw LLM entries (snake_case `physical_index` markers); callers validate them.
  */
 export async function generateTocContinue(
-  tocContent: TocItem[],
+  tocContent: RawTocEntry[],
   part: string,
   options: TocOptions
-): Promise<TocItem[]> {
+): Promise<RawTocEntry[]> {
   const prompt = prompts.generateTocContinuePrompt(part, JSON.stringify(tocContent, null, 2));
   const { content, finishReason } = await chatGPTWithFinishReason({
     model: options.model,
@@ -275,21 +396,22 @@ export async function generateTocContinue(
   });
 
   if (finishReason === "finished") {
-    const json = extractJson<TocItem[]>(content);
-    return json || [];
+    const json = extractJson<RawTocEntry[]>(content);
+    return Array.isArray(json) ? json : [];
   }
   
   throw new Error(`Generation incomplete: ${finishReason}`);
 }
 
 /**
- * Add page numbers to TOC structure from document parts
+ * Add page numbers to TOC structure from document parts.
+ * Returns the raw LLM entries ("start" removed); an unparseable reply yields [].
  */
 export async function addPageNumberToToc(
   part: string,
-  structure: TocItem[],
+  structure: RawTocEntry[],
   options: TocOptions
-): Promise<TocItem[]> {
+): Promise<RawTocEntry[]> {
   const prompt = prompts.addPageNumberToTocPrompt(part, JSON.stringify(structure, null, 2));
   const response = await chatGPT({
     model: options.model,
@@ -298,12 +420,14 @@ export async function addPageNumberToToc(
     baseUrl: options.baseUrl,
   });
 
-  const json = extractJson<TocItem[]>(response);
-  if (!json) return structure;
+  const json = extractJson<RawTocEntry[]>(response);
+  if (!Array.isArray(json)) return [];
 
   // Remove 'start' field from items
   for (const item of json) {
-    delete (item as unknown as Record<string, unknown>).start;
+    if (item && typeof item === "object") {
+      delete item.start;
+    }
   }
 
   return json;
@@ -378,8 +502,13 @@ export async function checkTitleAppearanceInStartConcurrent(
     }
 
     const pageText = pages[item.physicalIndex - 1]?.text || "";
-    const appearStart = await checkTitleAppearanceInStart(item.title, pageText, options);
-    results.push({ ...item, appearStart });
+    try {
+      const appearStart = await checkTitleAppearanceInStart(item.title, pageText, options);
+      results.push({ ...item, appearStart });
+    } catch (error) {
+      console.error(`Error checking start for ${item.title}:`, error);
+      results.push({ ...item, appearStart: "no" });
+    }
   }
 
   return results;

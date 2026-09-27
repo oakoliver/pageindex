@@ -16,9 +16,11 @@ import {
   generateDocDescription,
   verifyToc,
   fixIncorrectToc,
+  PDF_KEY_ORDER,
   type TreeOptions,
 } from "./tree";
-import { convertPhysicalIndexToInt, removeFields } from "./utils";
+import { convertPhysicalIndexToInt, formatStructure } from "./utils";
+import { DEFAULT_INDEX_MODEL } from "./types";
 import type { PageIndexOptions, PageIndexResult, TreeNode, TocItem, ExtractionMode } from "./types";
 
 interface InternalOptions extends TreeOptions {
@@ -30,8 +32,8 @@ interface InternalOptions extends TreeOptions {
   ocrConcurrency: number;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<PageIndexOptions, "apiKey" | "baseUrl">> = {
-  model: "gpt-4o-2024-11-20",
+const DEFAULT_OPTIONS: Required<Omit<PageIndexOptions, "apiKey" | "baseUrl" | "summaryModel">> = {
+  model: DEFAULT_INDEX_MODEL,
   tocCheckPageNum: 20,
   maxPageNumEachNode: 10,
   maxTokenNumEachNode: 20000,
@@ -58,6 +60,7 @@ export class PageIndex {
   constructor(options: PageIndexOptions = {}) {
     this.options = {
       model: options.model || DEFAULT_OPTIONS.model,
+      summaryModel: options.summaryModel || undefined,
       tocCheckPageNum: options.tocCheckPageNum || DEFAULT_OPTIONS.tocCheckPageNum,
       maxPageNumEachNode: options.maxPageNumEachNode || DEFAULT_OPTIONS.maxPageNumEachNode,
       maxTokenNumEachNode: options.maxTokenNumEachNode || DEFAULT_OPTIONS.maxTokenNumEachNode,
@@ -208,6 +211,9 @@ export class PageIndex {
       tocItems = fixed;
     }
 
+    // Items without a (valid) physical index cannot be placed in the tree
+    tocItems = tocItems.filter((item) => item.physicalIndex !== undefined && item.physicalIndex !== null);
+
     // Build tree structure
     const tree = buildTree(tocItems, endPhysicalIndex, this.options);
 
@@ -229,11 +235,11 @@ export class PageIndex {
       docDescription = await generateDocDescription(tree, this.options);
     }
 
-    // Remove text if not requested in output
-    let finalStructure = tree;
-    if (!this.options.addNodeText) {
-      finalStructure = removeFields(tree, ["text"]) as TreeNode[];
-    }
+    // Final key order; text is dropped unless requested in output
+    const keyOrder = this.options.addNodeText
+      ? PDF_KEY_ORDER
+      : PDF_KEY_ORDER.filter((key) => key !== "text");
+    const finalStructure = formatStructure(tree, keyOrder) as TreeNode[];
 
     return {
       docName,
@@ -287,7 +293,7 @@ export async function indexPdfWithOcr(
   const pageIndex = new PageIndex({
     ...options,
     extractionMode: "ocr",
-    model: options?.reasoningModel || options?.model || "gpt-4o-2024-11-20",
+    model: options?.reasoningModel || options?.model || DEFAULT_INDEX_MODEL,
     ocrModel: options?.ocrModel || "mlx-community/GLM-OCR-bf16",
   });
   return pageIndex.fromPdf(input);

@@ -28,6 +28,7 @@ export type {
   ExtractionMode,
   OcrPromptType,
 } from "./types";
+export { DEFAULT_INDEX_MODEL } from "./types";
 
 // PDF utilities
 export { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf";
@@ -50,6 +51,10 @@ export {
   chatGPTBatch,
   getLMStudioConfig,
   getOllamaConfig,
+  setChatClient,
+  isUnrecoverable,
+  LLMRetriesExhausted,
+  type ChatClient,
   type ClientConfig,
   type ChatOptions,
   type ChatResult,
@@ -68,7 +73,20 @@ export {
   countTokens,
   extractJson,
   formatStructure,
+  removeFields,
+  parsePhysicalIndex,
+  validatePhysicalIndices,
+  validateChunkPhysicalIndices,
+  extractChunkMarkerSet,
+  normalizeTocItems,
+  type RawTocEntry,
 } from "./utils";
+
+// Tree optimization (deterministic merge)
+export { mergeTree, treeCost, searchSpan, residualSpan, subtreeEnd } from "./tree-optimize";
+
+// Prompt-injection hardening
+export { secureDocText, sanitizeDocText, wrapDocText, SYSTEM_HARDENING } from "./prompts";
 
 // Markdown processing
 export {
@@ -79,4 +97,6 @@ export {
   buildTreeFromNodes,
   treeThinningForIndex,
   printTocMd,
+  countMarkdownLines,
+  type MarkdownHeading,
 } from "./markdown";

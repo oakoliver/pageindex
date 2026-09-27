@@ -4,7 +4,7 @@
  */
 
 import { chatGPT } from "./openai";
-import type { TreeNode, MarkdownOptions, PageIndexResult } from "./types";
+import { DEFAULT_INDEX_MODEL, type TreeNode, type MarkdownOptions, type PageIndexResult } from "./types";
 import {
   countTokens,
   writeNodeId,
@@ -28,8 +28,24 @@ interface MarkdownTreeNode extends TreeNode {
   lineNum?: number;
 }
 
+/** Output key order for markdown trees (lineNum right after nodeId, as upstream) */
+const MARKDOWN_KEY_ORDER = [
+  "title",
+  "nodeId",
+  "lineNum",
+  "summary",
+  "prefixSummary",
+  "text",
+  "nodes",
+];
+
+/** Number of lines in the markdown source */
+export function countMarkdownLines(content: string): number {
+  return content.split("\n").length;
+}
+
 const DEFAULT_MARKDOWN_OPTIONS = {
-  model: "gpt-4o-2024-11-20",
+  model: DEFAULT_INDEX_MODEL,
   tocCheckPageNum: 20,
   maxPageNumEachNode: 10,
   maxTokenNumEachNode: 20000,
@@ -42,16 +58,25 @@ const DEFAULT_MARKDOWN_OPTIONS = {
   summaryTokenThreshold: 200,
 } as const;
 
+/** A heading found in markdown: title, 1-indexed line number and heading level */
+export interface MarkdownHeading {
+  nodeTitle: string;
+  lineNum: number;
+  level: number;
+}
+
 /**
  * Extract header nodes from markdown content
  * Respects code blocks and returns both nodes and original lines
  */
 export function extractNodesFromMarkdown(
   markdownContent: string
-): { nodeList: Array<{ nodeTitle: string; lineNum: number }>; lines: string[] } {
+): { nodeList: MarkdownHeading[]; lines: string[] } {
   const headerPattern = /^(#{1,6})\s+(.+)$/;
+  // A line consisting only of bold text is treated as a level-1 heading
+  const boldHeadingPattern = /^\*\*(.+?)\*\*\s*$/;
   const codeBlockPattern = /^```/;
-  const nodeList: Array<{ nodeTitle: string; lineNum: number }> = [];
+  const nodeList: MarkdownHeading[] = [];
 
   const lines = markdownContent.split("\n");
   let inCodeBlock = false;
@@ -76,7 +101,17 @@ export function extractNodesFromMarkdown(
       const match = strippedLine.match(headerPattern);
       if (match) {
         const title = match[2]!.trim();
-        nodeList.push({ nodeTitle: title, lineNum: lineNum + 1 }); // 1-indexed
+        const level = match[1]!.length;
+        nodeList.push({ nodeTitle: title, lineNum: lineNum + 1, level }); // 1-indexed
+        continue;
+      }
+
+      const boldMatch = strippedLine.match(boldHeadingPattern);
+      if (boldMatch) {
+        const title = boldMatch[1]!.trim();
+        if (title) {
+          nodeList.push({ nodeTitle: title, lineNum: lineNum + 1, level: 1 });
+        }
       }
     }
   }
@@ -88,28 +123,17 @@ export function extractNodesFromMarkdown(
  * Extract text content for each node based on line ranges
  */
 export function extractNodeTextContent(
-  nodeList: Array<{ nodeTitle: string; lineNum: number }>,
+  nodeList: MarkdownHeading[],
   markdownLines: string[]
 ): MarkdownNode[] {
   const allNodes: MarkdownNode[] = [];
 
+  // The level comes from extraction (so bold-line headings are kept as-is)
   for (const node of nodeList) {
-    const lineContent = markdownLines[node.lineNum - 1];
-    if (!lineContent) continue;
-
-    const headerMatch = lineContent.match(/^(#{1,6})/);
-
-    if (!headerMatch) {
-      console.warn(
-        `Warning: Line ${node.lineNum} does not contain a valid header: '${lineContent}'`
-      );
-      continue;
-    }
-
     const processedNode: MarkdownNode = {
       title: node.nodeTitle,
       lineNum: node.lineNum,
-      level: headerMatch[1]!.length,
+      level: node.level,
     };
     allNodes.push(processedNode);
   }
@@ -412,6 +436,7 @@ export async function mdToTree(
 
   // Read markdown file
   const markdownContent = await fs.readFile(mdPath, 'utf-8');
+  const lineCount = countMarkdownLines(markdownContent);
 
   console.log("Extracting nodes from markdown...");
   const { nodeList, lines: markdownLines } = extractNodesFromMarkdown(markdownContent);
@@ -437,15 +462,7 @@ export async function mdToTree(
   console.log("Formatting tree structure...");
 
   // Format structure with preferred key order
-  const keyOrder = [
-    "title",
-    "nodeId",
-    "summary",
-    "prefixSummary",
-    "text",
-    "lineNum",
-    "nodes",
-  ];
+  const keyOrder = MARKDOWN_KEY_ORDER;
 
   if (opts.addNodeSummary) {
     // Always format first
@@ -456,7 +473,7 @@ export async function mdToTree(
       treeStructure,
       opts.summaryTokenThreshold,
       {
-        model: opts.model,
+        model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
         baseUrl: undefined,
       }
@@ -471,7 +488,7 @@ export async function mdToTree(
     if (opts.addDocDescription) {
       console.log("Generating document description...");
       const docDescription = await generateDocDescriptionMd(treeStructure, {
-        model: opts.model,
+        model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
         baseUrl: undefined,
       });
@@ -479,6 +496,7 @@ export async function mdToTree(
       return {
         docName: path.basename(mdPath, path.extname(mdPath)),
         docDescription,
+        lineCount,
         structure: treeStructure,
       };
     }
@@ -492,6 +510,7 @@ export async function mdToTree(
 
   return {
     docName: path.basename(mdPath, path.extname(mdPath)),
+    lineCount,
     structure: treeStructure,
   };
 }
@@ -508,6 +527,8 @@ export async function markdownToTree(
     ...DEFAULT_MARKDOWN_OPTIONS,
     ...options,
   };
+
+  const lineCount = countMarkdownLines(content);
 
   console.log("Extracting nodes from markdown...");
   const { nodeList, lines: markdownLines } = extractNodesFromMarkdown(content);
@@ -531,15 +552,7 @@ export async function markdownToTree(
   }
 
   // Format structure
-  const keyOrder = [
-    "title",
-    "nodeId",
-    "summary",
-    "prefixSummary",
-    "text",
-    "lineNum",
-    "nodes",
-  ];
+  const keyOrder = MARKDOWN_KEY_ORDER;
 
   if (opts.addNodeSummary) {
     treeStructure = formatStructure(treeStructure, keyOrder) as MarkdownTreeNode[];
@@ -549,7 +562,7 @@ export async function markdownToTree(
       treeStructure,
       opts.summaryTokenThreshold,
       {
-        model: opts.model,
+        model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
         baseUrl: undefined,
       }
@@ -563,7 +576,7 @@ export async function markdownToTree(
     if (opts.addDocDescription) {
       console.log("Generating document description...");
       const docDescription = await generateDocDescriptionMd(treeStructure, {
-        model: opts.model,
+        model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
         baseUrl: undefined,
       });
@@ -571,6 +584,7 @@ export async function markdownToTree(
       return {
         docName,
         docDescription,
+        lineCount,
         structure: treeStructure,
       };
     }
@@ -583,6 +597,7 @@ export async function markdownToTree(
 
   return {
     docName,
+    lineCount,
     structure: treeStructure,
   };
 }

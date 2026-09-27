@@ -8,9 +8,14 @@ export type ExtractionMode = "text" | "ocr";
 /** OCR prompt type for GLM-OCR */
 export type OcrPromptType = "text" | "formula" | "table";
 
+/** Default model used to index documents (structure and summaries), as in upstream PageIndex */
+export const DEFAULT_INDEX_MODEL = "gpt-5.6-luna";
+
 export interface PageIndexOptions {
-  /** OpenAI model to use for reasoning (default: gpt-4o-2024-11-20) */
+  /** Model used to index the document (default: gpt-5.6-luna) */
   model?: string;
+  /** Model for node summaries and the document description (default: `model`) */
+  summaryModel?: string;
   /** Number of pages to check for TOC (default: 20) */
   tocCheckPageNum?: number;
   /** Max pages per node before splitting (default: 10) */
@@ -63,12 +68,16 @@ export interface TreeNode {
   prefixSummary?: string;
   text?: string;
   lineNum?: number;
+  /** Titles of descendants folded into this node by the tree merge pass */
+  keyItems?: string[];
   nodes?: TreeNode[];
 }
 
 export interface PageIndexResult {
   docName: string;
   docDescription?: string;
+  /** Number of lines in the source (markdown only) */
+  lineCount?: number;
   structure: TreeNode[];
 }
 

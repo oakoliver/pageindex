@@ -3,7 +3,7 @@
  * Functions for building, processing, and managing document tree structures
  */
 
-import { chatGPT } from "./openai";
+import { chatGPT, getErrorStatus, isUnrecoverable } from "./openai";
 import type { PdfPage } from "./pdf";
 import type { TreeNode, TocItem } from "./types";
 import {
@@ -14,7 +14,13 @@ import {
   structureToList,
   createCleanStructureForDescription,
   formatStructure,
+  normalizeTocItems,
+  validateChunkPhysicalIndices,
+  validatePhysicalIndices,
+  extractChunkMarkerSet,
+  type RawTocEntry,
 } from "./utils";
+import { mergeTree } from "./tree-optimize";
 import * as prompts from "./prompts";
 import {
   tocTransformer,
@@ -29,6 +35,8 @@ import {
 } from "./toc";
 
 export interface TreeOptions extends TocOptions {
+  /** Model for node summaries and the document description (default: model) */
+  summaryModel?: string;
   maxPageNumEachNode: number;
   maxTokenNumEachNode: number;
   addNodeId: boolean;
@@ -180,14 +188,22 @@ export async function processNoToc(
 
   const groupTexts = pageListToGroupText(pageContents, tokenLengths);
 
-  let tocWithPageNumber = await generateTocInit(groupTexts[0] || "", options);
+  // Only keep physical indices whose markers are in the chunk the model saw
+  // and that fall inside the document's page range
+  const firstGroup = groupTexts[0] || "";
+  let tocWithPageNumber = await generateTocInit(firstGroup, options);
+  tocWithPageNumber = validateChunkPhysicalIndices(tocWithPageNumber, firstGroup);
+  tocWithPageNumber = validatePhysicalIndices(tocWithPageNumber, pages.length, startIndex);
 
   for (let i = 1; i < groupTexts.length; i++) {
-    const additional = await generateTocContinue(tocWithPageNumber, groupTexts[i] || "", options);
+    const groupText = groupTexts[i] || "";
+    let additional = await generateTocContinue(tocWithPageNumber, groupText, options);
+    additional = validateChunkPhysicalIndices(additional, groupText);
+    additional = validatePhysicalIndices(additional, pages.length, startIndex);
     tocWithPageNumber.push(...additional);
   }
 
-  return tocWithPageNumber;
+  return normalizeTocItems(tocWithPageNumber);
 }
 
 /**
@@ -212,12 +228,39 @@ export async function processTocNoPageNumbers(
 
   const groupTexts = pageListToGroupText(pageContents, tokenLengths);
 
-  let tocWithPageNumber = [...tocItems];
+  // Working copy in the LLM's own (snake_case) shape
+  const tocWithPageNumber: RawTocEntry[] = tocItems.map((item) => {
+    const entry: RawTocEntry = { structure: item.structure ?? null, title: item.title };
+    if (item.page !== undefined) entry.page = item.page;
+    return entry;
+  });
+
+  const sameEntry = (a: RawTocEntry | undefined, b: RawTocEntry): boolean =>
+    String(a?.structure ?? "") === String(b.structure ?? "") &&
+    String(a?.title ?? "") === String(b.title ?? "");
+
   for (const groupText of groupTexts) {
-    tocWithPageNumber = await addPageNumberToToc(groupText, tocWithPageNumber, options);
+    const llmResult = await addPageNumberToToc(groupText, tocWithPageNumber, options);
+    if (llmResult.length !== tocWithPageNumber.length) {
+      throw new Error("LLM returned a different number of TOC entries than expected.");
+    }
+    if (tocWithPageNumber.some((current, idx) => !sameEntry(llmResult[idx], current))) {
+      throw new Error("LLM returned reordered or modified TOC entries.");
+    }
+
+    // Only fill entries that are still unplaced, and only with markers from this chunk
+    const validIndices = extractChunkMarkerSet(groupText);
+    tocWithPageNumber.forEach((current, idx) => {
+      if (current.physical_index !== null && current.physical_index !== undefined) return;
+      const raw = llmResult[idx]?.physical_index;
+      if (raw === null || raw === undefined) return;
+      const match = String(raw).trim().match(/^<physical_index_(\d+)>$/);
+      if (!match || !validIndices.has(parseInt(match[1]!, 10))) return;
+      current.physical_index = raw;
+    });
   }
 
-  return tocWithPageNumber;
+  return normalizeTocItems(tocWithPageNumber);
 }
 
 /**
@@ -337,7 +380,7 @@ async function generateNodeSummary(
 
   const prompt = prompts.generateNodeSummaryPrompt(node.text);
   return chatGPT({
-    model: options.model,
+    model: options.summaryModel || options.model,
     prompt,
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
@@ -357,13 +400,31 @@ export async function generateSummariesForStructure(
   const batchSize = 5;
   for (let i = 0; i < nodes.length; i += batchSize) {
     const batch = nodes.slice(i, i + batchSize);
-    const summaries = await Promise.all(
+    const summaries = await Promise.allSettled(
       batch.map((node) => generateNodeSummary(node as TreeNode, options))
     );
 
     for (let j = 0; j < batch.length; j++) {
-      (batch[j] as TreeNode).summary = summaries[j];
+      const result = summaries[j]!;
+      if (result.status === "rejected") {
+        // Dead credentials or a missing model fail the run; per-prompt
+        // failures (e.g. context overflow) leave an empty summary
+        if (isUnrecoverable(result.reason)) {
+          throw result.reason;
+        }
+        (batch[j] as TreeNode).summary = "";
+      } else {
+        (batch[j] as TreeNode).summary = result.value;
+      }
     }
+  }
+
+  if (nodes.length > 0 && !nodes.some((node) => node.summary)) {
+    throw new Error(
+      "Summary generation failed for all nodes " +
+        "(every summary call failed or returned empty; " +
+        "check the model and its context limits)"
+    );
   }
 }
 
@@ -377,12 +438,21 @@ export async function generateDocDescription(
   const cleanStructure = createCleanStructureForDescription(structure);
   const prompt = prompts.generateDocDescriptionPrompt(JSON.stringify(cleanStructure));
 
-  return chatGPT({
-    model: options.model,
-    prompt,
-    apiKey: options.apiKey,
-    baseUrl: options.baseUrl,
-  });
+  try {
+    return await chatGPT({
+      model: options.summaryModel || options.model,
+      prompt,
+      apiKey: options.apiKey,
+      baseUrl: options.baseUrl,
+    });
+  } catch (error) {
+    // Per-prompt 400: the whole-tree prompt overran the context; the indexed
+    // document survives without a description
+    if (getErrorStatus(error) === 400) {
+      return "";
+    }
+    throw error;
+  }
 }
 
 /**
@@ -405,7 +475,14 @@ export async function verifyToc(
     if (!item) continue;
     
     const itemWithIndex = { ...item, listIndex: i };
-    const result = await checkTitleAppearance(itemWithIndex, pages, startIndex, options);
+    let result: Awaited<ReturnType<typeof checkTitleAppearance>>;
+    try {
+      result = await checkTitleAppearance(itemWithIndex, pages, startIndex, options);
+    } catch (error) {
+      // Skip items whose check failed (LLM error); they count neither way
+      console.error(`Error verifying TOC item "${item.title}":`, error);
+      continue;
+    }
 
     if (result.answer === "yes") {
       correct.push(item);
@@ -478,18 +555,31 @@ export async function fixIncorrectToc(
     }
 
     const contentRange = pageContents.join("");
-    const physicalIndexInt = await singleTocItemIndexFixer(
-      incorrectItem.title,
-      contentRange,
-      options
-    );
+    let physicalIndexInt: number | null;
+    try {
+      physicalIndexInt = await singleTocItemIndexFixer(
+        incorrectItem.title,
+        contentRange,
+        options
+      );
+    } catch (error) {
+      // An LLM failure drops this item from the results (it is neither fixed nor re-queued)
+      console.error(`Error fixing TOC item "${incorrectItem.title}":`, error);
+      continue;
+    }
 
     if (physicalIndexInt !== null && fixed[listIndex]) {
       fixed[listIndex].physicalIndex = physicalIndexInt;
 
       // Verify the fix
       const checkItem = { ...fixed[listIndex]!, listIndex };
-      const checkResult = await checkTitleAppearance(checkItem, pages, startIndex, options);
+      let checkResult: Awaited<ReturnType<typeof checkTitleAppearance>>;
+      try {
+        checkResult = await checkTitleAppearance(checkItem, pages, startIndex, options);
+      } catch (error) {
+        console.error(`Error checking fixed TOC item "${incorrectItem.title}":`, error);
+        continue;
+      }
 
       if (checkResult.answer !== "yes") {
         stillIncorrect.push({
@@ -520,12 +610,26 @@ export function buildTree(
   // Post-process: add start/end indices and convert to tree
   const tree = postProcessing(withPreface, endPhysicalIndex);
 
+  // Collapse subtrees that do not beat a linear scan (deterministic, no LLM)
+  mergeTree(tree);
+
   // Add node IDs if requested
   if (options.addNodeId) {
     writeNodeId(tree);
   }
 
   // Format structure with preferred key order
-  const keyOrder = ["title", "nodeId", "startIndex", "endIndex", "summary", "text", "nodes"];
-  return formatStructure(tree, keyOrder) as TreeNode[];
+  return formatStructure(tree, PDF_KEY_ORDER) as TreeNode[];
 }
+
+/** Output key order for PDF trees */
+export const PDF_KEY_ORDER = [
+  "title",
+  "nodeId",
+  "startIndex",
+  "endIndex",
+  "keyItems",
+  "summary",
+  "text",
+  "nodes",
+];
