@@ -20,7 +20,7 @@
     "build": "npm run build:esm && npm run build:cjs && npm run build:cli && npm run build:types",
     "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=node --external:openai --external:pdf-parse --external:pdf-poppler",
     "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=node --external:openai --external:pdf-parse --external:pdf-poppler",
-    "build:cli": "esbuild src/cli.ts --bundle --format=esm --outfile=dist/cli.js --platform=node --external:openai --external:pdf-parse --external:pdf-poppler --banner:js='#!/usr/bin/env node'",
+    "build:cli": "esbuild src/cli.ts --bundle --format=esm --outfile=dist/cli.js --platform=node --external:openai --external:pdf-parse --external:pdf-poppler",
     "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
