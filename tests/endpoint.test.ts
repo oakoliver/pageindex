@@ -88,3 +88,18 @@ describe("Markdown summaries endpoint", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("Markdown summary default", () => {
+  test("markdownToTree makes no LLM calls unless summaries are asked for, as upstream md_to_tree", async () => {
+    const server = fakeOpenAI("unexpected summary");
+    try {
+      const long = `# Guide\n\n${"word ".repeat(400)}\n\n## Part\n\n${"more ".repeat(400)}\n`;
+      const result = await markdownToTree(long, "doc", { baseUrl: server.url, apiKey: "test" });
+      expect(server.state.hits).toBe(0);
+      expect(JSON.stringify(result.structure)).not.toContain("summary");
+    } finally {
+      server.server.stop(true);
+    }
+  });
+});
+

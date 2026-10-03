@@ -50,7 +50,9 @@ const DEFAULT_MARKDOWN_OPTIONS = {
   maxPageNumEachNode: 10,
   maxTokenNumEachNode: 20000,
   addNodeId: true,
-  addNodeSummary: true,
+  // Off for Markdown, as upstream's md_to_tree (if_add_node_summary='no');
+  // summaries call the LLM.
+  addNodeSummary: false,
   addDocDescription: false,
   addNodeText: false,
   thinning: false,
