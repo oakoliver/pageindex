@@ -7,10 +7,10 @@ Vectorless, reasoning-based document indexing for RAG. A TypeScript port of the 
 > **Upstream parity:** the standard (LLM) PDF pipeline and the Markdown pipeline are at parity with upstream PageIndex **v0.2.19** (2026-09-21). Previous baseline: upstream commit `959452d` (2026-03-04). Upstream-only surfaces that are not ported: PageIndex Flash (the deterministic PDF parser), the LLM-driven `optimize_tree` expand pass, the local/cloud SDK clients, chat/agent tools, MCP bridge and LiteLLM provider routing (this port stays on OpenAI-compatible endpoints).
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/tree.gif" alt="Terminal recording: bun examples/tree.ts turns a sample Markdown handbook into a 15-node tree with node IDs, line numbers and token estimates, then reruns with --thinning 120 and the small sections merge into their parents, leaving 11 nodes" width="760">
+  <img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/tree.gif" alt="Terminal recording: bun examples/tree.ts indexes a 220-line sample design document with mdToTree and no LLM calls: pipeline stage timings, document stats (38 headings, 38 tree nodes, depth 4), then the tree with node ids, heading levels, line ranges, token estimates and a map of where each section sits, with mergeTree folding small subtrees into keyItems (38 to 11 nodes)" width="760">
 </p>
 
-<sub>Recorded with <a href="https://github.com/oakoliver/vhs">@oakoliver/vhs</a> from <a href="examples/tree.ts"><code>examples/tree.ts</code></a> on <a href="examples/weather-station.md">a sample document</a>. Markdown indexing with summaries off makes no LLM calls, so this runs offline.</sub>
+<sub>Recorded with <a href="https://github.com/oakoliver/vhs">@oakoliver/vhs</a> from <a href="examples/tree.ts"><code>examples/tree.ts</code></a> on <a href="examples/sample-design-doc.md">an invented design document</a>. Markdown indexing with summaries off makes no LLM calls, so this runs offline.</sub>
 
 ## Features
 
@@ -155,9 +155,9 @@ pageindex --pdf document.pdf --index-model gpt-5.6-luna --summary-model gpt-4.1-
 pageindex --help
 ```
 
-<img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/cli.png" alt="Running bun src/cli.ts --md examples/weather-station.md --no-node-summary -o /tmp/ws.json, followed by the first lines of the JSON tree it writes: docName, then nested nodes with title, nodeId and lineNum" width="720">
+<img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/cli.png" alt="Running bun src/cli.ts --md examples/sample-design-doc.md -o /tmp/design.json, followed by the first lines of the JSON tree it writes: docName, lineCount, then nested nodes with title, nodeId and lineNum" width="720">
 
-<sub>The CLI from source on the sample Markdown file, summaries off (no API key needed).</sub>
+<sub>The CLI from source on the sample Markdown file. Markdown summaries are off unless you pass <code>--add-node-summary</code>, so no API key is needed.</sub>
 
 ## API Reference
 
@@ -303,7 +303,7 @@ bun run build
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/indexing-dark.png">
-  <img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/indexing-light.png" alt="Pipeline diagram. PDF input: PDF file to page text (pdf-parse, or OCR with Poppler and a vision model). LLM reasoning: detect TOC (are page numbers given?), build TOC entries from the TOC or from content, verify and fix them against the pages. Local: build tree with node IDs, written as the JSON tree index; optional LLM summaries. Markdown input: Markdown file to headings to optional thinning, joining the same build-tree step without any LLM call." width="820">
+  <img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/indexing-light.png" alt="Pipeline diagram. PDF input: PDF file to page text (pdf-parse, or OCR with Poppler and a vision model). LLM reasoning: detect TOC (are page numbers given?), build TOC entries from the TOC or from content, verify and fix them against the pages. Local: build tree with node IDs (PDF trees also get the deterministic merge into keyItems), written as the JSON tree index; optional LLM summaries. Markdown input: Markdown file to headings to optional thinning, joining the same build-tree step without any LLM call." width="820">
 </picture>
 
 <sub>Drawn from <code>PageIndex.processPdfPages</code> and <code>mdToTree</code>; source: <a href="assets/diagrams/indexing.workflow.json"><code>assets/diagrams/indexing.workflow.json</code></a> (<a href="assets/indexing.svg">SVG</a>). This package builds the index; searching the tree is up to your application.</sub>

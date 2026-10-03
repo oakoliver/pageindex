@@ -13,11 +13,11 @@ Type "export PS1='> ' && clear"
 Enter
 Show
 
-Type "bun src/cli.ts --md examples/weather-station.md --no-node-summary -o /tmp/ws.json"
+Type "bun src/cli.ts --md examples/sample-design-doc.md -o /tmp/design.json"
 Sleep 300ms
 Enter
 Sleep 1.5s
-Type "head -n 28 /tmp/ws.json"
+Type "head -n 28 /tmp/design.json"
 Sleep 300ms
 Enter
 Sleep 2s

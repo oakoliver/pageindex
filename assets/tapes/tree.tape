@@ -2,9 +2,9 @@
 Output assets/tree.gif
 
 Set Shell bash
-Set FontSize 15
-Set Width 1000
-Set Height 430
+Set FontSize 13
+Set Width 1060
+Set Height 940
 Set Padding 24
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 35ms
@@ -14,13 +14,7 @@ Type "export PS1='> ' && clear"
 Enter
 Show
 
-Type "bun examples/tree.ts examples/weather-station.md"
+Type "bun examples/tree.ts"
 Sleep 300ms
 Enter
-Sleep 3s
-Type "clear"
-Enter
-Type "bun examples/tree.ts examples/weather-station.md --thinning 120"
-Sleep 300ms
-Enter
-Sleep 3.5s
+Sleep 4s

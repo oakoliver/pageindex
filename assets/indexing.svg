@@ -408,15 +408,15 @@ rect.c-bg-rect { fill: var(--bg); }
           <text x="956" y="258" class="t-muted" font-size="8" text-anchor="middle">optional</text>
         </g>
 
-        <g id="node-tree" data-node-id="tree" data-node-label="Build tree" tabindex="0" role="button" aria-label="Focus Build tree, nest + node IDs, Local, no LLM" aria-pressed="false" data-node-kind="backend" data-node-sublabel="nest + node IDs" data-node-context="Local, no LLM">
-          <title>Build tree · nest + node IDs · Local, no LLM</title>
+        <g id="node-tree" data-node-id="tree" data-node-label="Build tree" tabindex="0" role="button" aria-label="Focus Build tree, nest, IDs; PDF: merge, Local, no LLM" aria-pressed="false" data-node-kind="backend" data-node-sublabel="nest, IDs; PDF: merge" data-node-context="Local, no LLM">
+          <title>Build tree · nest, IDs; PDF: merge · Local, no LLM</title>
           <rect x="722" y="346" width="140" height="52" rx="6" class="c-mask"/>
           <rect x="722" y="346" width="140" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(728 352) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" x="792" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Build tree</text>
-          <text x="792" y="384" class="t-muted" font-size="8" text-anchor="middle">nest + node IDs</text>
+          <text x="792" y="384" class="t-muted" font-size="8" text-anchor="middle">nest, IDs; PDF: merge</text>
         </g>
 
         <g id="node-result" data-node-id="result" data-node-label="Tree index" tabindex="0" role="button" aria-label="Focus Tree index, JSON structure, Local, no LLM" aria-pressed="false" data-node-kind="database" data-node-sublabel="JSON structure" data-node-context="Local, no LLM">

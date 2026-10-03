@@ -110,7 +110,7 @@
       "col": 4,
       "type": "backend",
       "label": "Build tree",
-      "sublabel": "nest + node IDs",
+      "sublabel": "nest, IDs; PDF: merge",
       "width": 140
     },
     {
