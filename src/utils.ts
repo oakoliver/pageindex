@@ -1,5 +1,5 @@
 /**
- * bun-pageindex: Utility functions
+ * pageindex: Utility functions
  * Token counting, JSON extraction, tree manipulation
  */
 
