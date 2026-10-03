@@ -30,9 +30,11 @@ export interface OcrOptions {
   ocrPromptType?: "text" | "formula" | "table";
   /** Concurrent OCR requests (default: 3) */
   concurrency?: number;
+  /** Receives progress messages (default: console.log) */
+  logger?: (message: string) => void;
 }
 
-const DEFAULT_OCR_OPTIONS: Required<Omit<OcrOptions, "apiKey" | "baseUrl">> = {
+const DEFAULT_OCR_OPTIONS: Required<Omit<OcrOptions, "apiKey" | "baseUrl" | "logger">> = {
   ocrModel: "mlx-community/GLM-OCR-bf16",
   imageFormat: "png",
   imageDpi: 150,
@@ -224,7 +226,7 @@ export async function ocrImages(
 
     // Log progress
     const processed = Math.min(i + concurrency, imagePaths.length);
-    console.log(`[OCR] Processed ${processed}/${imagePaths.length} pages`);
+    (options.logger ?? console.log)(`[OCR] Processed ${processed}/${imagePaths.length} pages`);
   }
 
   return results;
@@ -238,7 +240,7 @@ export async function parsePdfWithOcr(
   input: string | Buffer | ArrayBuffer,
   options: OcrOptions = {}
 ): Promise<{ pages: PdfPage[]; tempDir?: string }> {
-  console.log("[OCR Mode] Converting PDF to images...");
+  (options.logger ?? console.log)("[OCR Mode] Converting PDF to images...");
 
   let imagePaths: string[];
   let tempDir: string | undefined;
@@ -256,8 +258,8 @@ export async function parsePdfWithOcr(
     tempDir = path.dirname(imagePaths[0]!);
   }
 
-  console.log(`[OCR Mode] Extracted ${imagePaths.length} page images`);
-  console.log("[OCR Mode] Running OCR on pages...");
+  (options.logger ?? console.log)(`[OCR Mode] Extracted ${imagePaths.length} page images`);
+  (options.logger ?? console.log)("[OCR Mode] Running OCR on pages...");
 
   // Run OCR on all images
   const texts = await ocrImages(imagePaths, options);

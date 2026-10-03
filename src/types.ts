@@ -34,6 +34,11 @@ export interface PageIndexOptions {
   apiKey?: string;
   /** Base URL for API (e.g., LM Studio: http://localhost:1234/v1) */
   baseUrl?: string;
+  /**
+   * Receives progress messages (default: console.log). Pass `() => {}` to
+   * silence them, or `console.error` to keep stdout clean.
+   */
+  logger?: (message: string) => void;
   
   // OCR-specific options
   /** Extraction mode: 'text' for native PDFs, 'ocr' for scanned PDFs (default: 'text') */
