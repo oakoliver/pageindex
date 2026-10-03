@@ -19,7 +19,7 @@ Vectorless, reasoning-based document indexing for RAG. A TypeScript port of the 
 - **OCR Mode**: Process scanned PDFs using GLM-OCR vision model (not in original PageIndex!)
 - **Markdown Support**: Convert markdown documents to tree structures
 - **LLM Agnostic**: Works with OpenAI, LM Studio, Ollama, or any OpenAI-compatible API
-- **Bun Native**: Optimized for Bun runtime with minimal dependencies
+- **Node, Bun and Deno**: Node.js 20+ (Markdown-only use also works on Node 18; PDF parsing needs 20), Bun and Deno
 - **CLI & API**: Use as a library or command-line tool
 
 ## Installation
@@ -29,6 +29,8 @@ npm install pageindex
 # or
 bun add pageindex
 ```
+
+Requires Node.js 20 or newer for PDF input; the PDF stack is loaded only when a PDF is parsed, so Markdown indexing also runs on Node 18. TypeScript projects can use any `moduleResolution` (`nodenext`, `node16` or `bundler`).
 
 ### For OCR Mode (Scanned PDFs)
 
@@ -176,9 +178,10 @@ const pageIndex = new PageIndex(options);
 - `maxPageNumEachNode`: Max pages per node (default: 10)
 - `maxTokenNumEachNode`: Max tokens per node (default: 20000)
 - `addNodeId`: Add node IDs (default: true)
-- `addNodeSummary`: Generate summaries (default: true)
+- `addNodeSummary`: Generate summaries with the LLM (default: true for PDFs, false for Markdown; see below)
 - `addDocDescription`: Add document description (default: false)
 - `addNodeText`: Include raw text (default: false)
+- `logger`: Receives progress messages (default: `console.log`). Pass `() => {}` to silence them, or `console.error` to keep stdout clean.
 
 **OCR Options:**
 - `extractionMode`: "text" (default) or "ocr" for scanned PDFs
@@ -204,6 +207,7 @@ const result = await mdToTree(path, options);
 Lines consisting only of bold text (`**Heading**`) are treated as level-1 headings, and the result includes `lineCount`.
 
 **Additional Options:**
+- `addNodeSummary`: Generate summaries with the LLM (default: **false** for Markdown, as upstream's `md_to_tree` and the CLI; pass `true` to summarize, which needs an API key or a local endpoint)
 - `thinning`: Apply tree thinning (default: false)
 - `thinningThreshold`: Min tokens for thinning (default: 5000)
 - `summaryTokenThreshold`: Token threshold for summaries (default: 200)
@@ -234,7 +238,7 @@ interface TreeNode {
 
 ### Behavior notes (upstream v0.2.19)
 
-- **Prompt-injection hardening**: document text is sanitized (known injection phrases are redacted) and wrapped in `<user_document>` delimiters before it reaches the LLM, and document-bearing prompts carry a hardening preamble.
+- **Prompt-injection hardening**: in the PDF structure prompts (TOC detection, extraction, verification and fixing), document text is sanitized (known injection phrases are redacted) and wrapped in `<user_document>` delimiters, and those prompts carry a hardening preamble. As upstream, the node-summary and document-description prompts, used for both PDFs and Markdown, send the text without that wrapping.
 - **Physical index validation**: page markers returned by the LLM are dropped when they are not in the chunk the model saw or fall outside the document; TOC entries that end up unplaced are left out of the tree.
 - **Tree merge**: after the tree is built, subtrees whose structure does not beat a linear scan of their pages are collapsed into their parent; the removed titles are kept as `keyItems`.
 - **Fail-loud LLM errors**: 400/401/403/404 are not retried; exhausted retries throw `LLMRetriesExhausted` instead of returning `"Error"`. Bad credentials or a missing model fail the run; per-prompt failures (e.g. context overflow) leave an empty summary/description; if every summary comes back empty the run fails.
