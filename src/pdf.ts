@@ -3,9 +3,9 @@
  * Uses pdf-parse for text extraction
  */
 
-import { PDFParse } from "pdf-parse";
-import { countTokens } from "./utils";
-import type { PageContent } from "./types";
+import type { PDFParse as PDFParser } from "pdf-parse";
+import { countTokens } from "./utils.js";
+import type { PageContent } from "./types.js";
 import * as fs from "fs/promises";
 
 export interface PdfPage {
@@ -38,6 +38,9 @@ export async function parsePdf(
   }
 
   // Parse PDF with data
+  // Loaded on first use: pdfjs-dist (via pdf-parse) needs DOMMatrix, which
+  // Node 18 lacks, so a static import broke Markdown-only use there too.
+  const { PDFParse } = (await import("pdf-parse")) as { PDFParse: typeof PDFParser };
   const parser = new PDFParse({ data });
   
   // Get text for all pages

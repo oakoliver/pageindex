@@ -3,9 +3,9 @@
  * Functions for detecting, extracting, and processing table of contents
  */
 
-import { chatGPT, chatGPTWithFinishReason, type ClientConfig } from "./openai";
-import type { PdfPage } from "./pdf";
-import type { TocItem, TocCheckResult } from "./types";
+import { chatGPT, chatGPTWithFinishReason, type ClientConfig } from "./openai.js";
+import type { PdfPage } from "./pdf.js";
+import type { TocItem, TocCheckResult } from "./types.js";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import {
   extractJson,
@@ -14,8 +14,8 @@ import {
   normalizeTocItems,
   validateChunkPhysicalIndices,
   type RawTocEntry,
-} from "./utils";
-import * as prompts from "./prompts";
+} from "./utils.js";
+import * as prompts from "./prompts.js";
 
 export interface TocOptions {
   model: string;

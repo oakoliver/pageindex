@@ -368,7 +368,11 @@ ${secureDocText(content)}`;
 }
 
 /**
- * Prompt to generate node summary
+ * Prompt to generate node summary.
+ *
+ * Not wrapped with secureDocText/SYSTEM_HARDENING: upstream v0.2.19 hardens
+ * only the PDF structure prompts (page_index_classic.py), and its summary and
+ * description prompts (utils.py) send the text as-is. Kept for parity.
  */
 export function generateNodeSummaryPrompt(nodeText: string): string {
   return `You are given a part of a document, your task is to generate a description of the partial document about what are main points covered in the partial document.
@@ -379,7 +383,8 @@ Directly return the description, do not include any other text.`;
 }
 
 /**
- * Prompt to generate document description
+ * Prompt to generate document description (not hardened; see
+ * generateNodeSummaryPrompt).
  */
 export function generateDocDescriptionPrompt(structure: string): string {
   return `Your are an expert in generating descriptions for a document.

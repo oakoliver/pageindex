@@ -3,9 +3,9 @@
  * Functions for building, processing, and managing document tree structures
  */
 
-import { chatGPT, getErrorStatus, isUnrecoverable } from "./openai";
-import type { PdfPage } from "./pdf";
-import type { TreeNode, TocItem } from "./types";
+import { chatGPT, getErrorStatus, isUnrecoverable } from "./openai.js";
+import type { PdfPage } from "./pdf.js";
+import type { TreeNode, TocItem } from "./types.js";
 import {
   countTokens,
   postProcessing,
@@ -19,9 +19,9 @@ import {
   validatePhysicalIndices,
   extractChunkMarkerSet,
   type RawTocEntry,
-} from "./utils";
-import { mergeTree } from "./tree-optimize";
-import * as prompts from "./prompts";
+} from "./utils.js";
+import { mergeTree } from "./tree-optimize.js";
+import * as prompts from "./prompts.js";
 import {
   tocTransformer,
   tocIndexExtractor,
@@ -32,7 +32,7 @@ import {
   checkTitleAppearanceInStartConcurrent,
   singleTocItemIndexFixer,
   type TocOptions,
-} from "./toc";
+} from "./toc.js";
 
 export interface TreeOptions extends TocOptions {
   /** Model for node summaries and the document description (default: model) */

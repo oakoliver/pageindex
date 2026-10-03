@@ -3,9 +3,9 @@
  * Primary entry point for PDF document indexing
  */
 
-import { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf";
-import { parsePdfWithOcr, type OcrOptions } from "./ocr";
-import { checkToc, checkTitleAppearanceInStartConcurrent, type TocOptions } from "./toc";
+import { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf.js";
+import { parsePdfWithOcr, type OcrOptions } from "./ocr.js";
+import { checkToc, checkTitleAppearanceInStartConcurrent, type TocOptions } from "./toc.js";
 import {
   processNoToc,
   processTocNoPageNumbers,
@@ -18,12 +18,13 @@ import {
   fixIncorrectToc,
   PDF_KEY_ORDER,
   type TreeOptions,
-} from "./tree";
-import { convertPhysicalIndexToInt, formatStructure } from "./utils";
-import { DEFAULT_INDEX_MODEL } from "./types";
-import type { PageIndexOptions, PageIndexResult, TreeNode, TocItem, ExtractionMode } from "./types";
+} from "./tree.js";
+import { convertPhysicalIndexToInt, formatStructure } from "./utils.js";
+import { DEFAULT_INDEX_MODEL } from "./types.js";
+import type { PageIndexOptions, PageIndexResult, TreeNode, TocItem, ExtractionMode } from "./types.js";
 
 interface InternalOptions extends TreeOptions {
+  logger?: (message: string) => void;
   extractionMode: ExtractionMode;
   ocrModel: string;
   ocrPromptType: "text" | "formula" | "table";
@@ -36,7 +37,7 @@ interface InternalOptions extends TreeOptions {
 export const LMSTUDIO_ENDPOINT = { baseUrl: "http://localhost:1234/v1", apiKey: "lm-studio" } as const;
 export const OLLAMA_ENDPOINT = { baseUrl: "http://localhost:11434/v1", apiKey: "ollama" } as const;
 
-const DEFAULT_OPTIONS: Required<Omit<PageIndexOptions, "apiKey" | "baseUrl" | "summaryModel">> = {
+const DEFAULT_OPTIONS: Required<Omit<PageIndexOptions, "apiKey" | "baseUrl" | "summaryModel" | "logger">> = {
   model: DEFAULT_INDEX_MODEL,
   tocCheckPageNum: 20,
   maxPageNumEachNode: 10,
@@ -61,6 +62,10 @@ const DEFAULT_OPTIONS: Required<Omit<PageIndexOptions, "apiKey" | "baseUrl" | "s
 export class PageIndex {
   private options: InternalOptions;
 
+  private log(message: string): void {
+    (this.options.logger ?? console.log)(message);
+  }
+
   constructor(options: PageIndexOptions = {}) {
     this.options = {
       model: options.model || DEFAULT_OPTIONS.model,
@@ -74,6 +79,7 @@ export class PageIndex {
       addNodeText: options.addNodeText ?? DEFAULT_OPTIONS.addNodeText,
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
+      logger: options.logger,
       // OCR options
       extractionMode: options.extractionMode || DEFAULT_OPTIONS.extractionMode,
       ocrModel: options.ocrModel || DEFAULT_OPTIONS.ocrModel,
@@ -128,7 +134,7 @@ export class PageIndex {
 
     if (this.options.extractionMode === "ocr") {
       // OCR mode: Convert PDF to images and extract text via vision model
-      console.log("[OCR Mode] Processing PDF with OCR...");
+      this.log("[OCR Mode] Processing PDF with OCR...");
       const ocrOptions: OcrOptions = {
         ocrModel: this.options.ocrModel,
         apiKey: this.options.apiKey,
@@ -137,6 +143,7 @@ export class PageIndex {
         imageDpi: this.options.imageDpi,
         ocrPromptType: this.options.ocrPromptType,
         concurrency: this.options.ocrConcurrency,
+        logger: this.options.logger,
       };
       const result = await parsePdfWithOcr(input, ocrOptions);
       pages = result.pages;
@@ -160,7 +167,7 @@ export class PageIndex {
 
     // Check for TOC
     const tocResult = await checkToc(pages, this.options);
-    console.log(
+    this.log(
       `TOC found: ${tocResult.tocContent !== null}, Pages: ${tocResult.tocPageList.length}, Has page numbers: ${tocResult.pageIndexGivenInToc}`
     );
 
@@ -168,11 +175,11 @@ export class PageIndex {
 
     if (tocResult.tocContent === null) {
       // No TOC - generate structure from document
-      console.log("Generating structure from document content...");
+      this.log("Generating structure from document content...");
       tocItems = await processNoToc(pages, startIndex, this.options);
     } else if (tocResult.pageIndexGivenInToc === "no") {
       // TOC without page numbers
-      console.log("Processing TOC without page numbers...");
+      this.log("Processing TOC without page numbers...");
       tocItems = await processTocNoPageNumbers(
         tocResult.tocContent,
         pages,
@@ -181,7 +188,7 @@ export class PageIndex {
       );
     } else {
       // TOC with page numbers
-      console.log("Processing TOC with page numbers...");
+      this.log("Processing TOC with page numbers...");
       tocItems = await processTocWithPageNumbers(
         tocResult.tocContent,
         tocResult.tocPageList,
@@ -197,12 +204,12 @@ export class PageIndex {
     tocItems = await checkTitleAppearanceInStartConcurrent(tocItems, pages, this.options);
 
     // Verify TOC
-    console.log("Verifying TOC...");
+    this.log("Verifying TOC...");
     const { incorrect } = await verifyToc(pages, tocItems, startIndex, this.options);
 
     // Fix incorrect items if any
     if (incorrect.length > 0) {
-      console.log(`Fixing ${incorrect.length} incorrect TOC items...`);
+      this.log(`Fixing ${incorrect.length} incorrect TOC items...`);
       const { fixed } = await fixIncorrectToc(
         tocItems,
         pages,
@@ -226,14 +233,14 @@ export class PageIndex {
 
     // Generate summaries if requested
     if (this.options.addNodeSummary) {
-      console.log("Generating summaries...");
+      this.log("Generating summaries...");
       await generateSummariesForStructure(tree, this.options);
     }
 
     // Generate document description if requested
     let docDescription: string | undefined;
     if (this.options.addDocDescription) {
-      console.log("Generating document description...");
+      this.log("Generating document description...");
       docDescription = await generateDocDescription(tree, this.options);
     }
 

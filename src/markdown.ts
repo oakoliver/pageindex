@@ -3,16 +3,16 @@
  * Functions for building tree structures from markdown documents
  */
 
-import { chatGPT } from "./openai";
-import { DEFAULT_INDEX_MODEL, type TreeNode, type MarkdownOptions, type PageIndexResult } from "./types";
+import { chatGPT } from "./openai.js";
+import { DEFAULT_INDEX_MODEL, type TreeNode, type MarkdownOptions, type PageIndexResult } from "./types.js";
 import {
   countTokens,
   writeNodeId,
   structureToList,
   createCleanStructureForDescription,
   formatStructure,
-} from "./utils";
-import * as prompts from "./prompts";
+} from "./utils.js";
+import * as prompts from "./prompts.js";
 import * as path from "path";
 import * as fs from "fs/promises";
 
@@ -50,7 +50,9 @@ const DEFAULT_MARKDOWN_OPTIONS = {
   maxPageNumEachNode: 10,
   maxTokenNumEachNode: 20000,
   addNodeId: true,
-  addNodeSummary: true,
+  // Off for Markdown, as upstream's md_to_tree (if_add_node_summary='no');
+  // summaries call the LLM.
+  addNodeSummary: false,
   addDocDescription: false,
   addNodeText: false,
   thinning: false,
@@ -433,25 +435,26 @@ export async function mdToTree(
     ...DEFAULT_MARKDOWN_OPTIONS,
     ...options,
   };
+  const log = opts.logger ?? console.log;
 
   // Read markdown file
   const markdownContent = await fs.readFile(mdPath, 'utf-8');
   const lineCount = countMarkdownLines(markdownContent);
 
-  console.log("Extracting nodes from markdown...");
+  log("Extracting nodes from markdown...");
   const { nodeList, lines: markdownLines } = extractNodesFromMarkdown(markdownContent);
 
-  console.log("Extracting text content from nodes...");
+  log("Extracting text content from nodes...");
   let nodesWithContent = extractNodeTextContent(nodeList, markdownLines);
 
   // Apply thinning if requested
   if (opts.thinning) {
     nodesWithContent = updateNodeListWithTextTokenCount(nodesWithContent);
-    console.log("Thinning nodes...");
+    log("Thinning nodes...");
     nodesWithContent = treeThinningForIndex(nodesWithContent, opts.thinningThreshold);
   }
 
-  console.log("Building tree from nodes...");
+  log("Building tree from nodes...");
   let treeStructure = buildTreeFromNodes(nodesWithContent);
 
   // Add node IDs if requested
@@ -459,7 +462,7 @@ export async function mdToTree(
     writeNodeId(treeStructure);
   }
 
-  console.log("Formatting tree structure...");
+  log("Formatting tree structure...");
 
   // Format structure with preferred key order
   const keyOrder = MARKDOWN_KEY_ORDER;
@@ -468,7 +471,7 @@ export async function mdToTree(
     // Always format first
     treeStructure = formatStructure(treeStructure, keyOrder) as MarkdownTreeNode[];
 
-    console.log("Generating summaries for each node...");
+    log("Generating summaries for each node...");
     await generateSummariesForStructureMd(
       treeStructure,
       opts.summaryTokenThreshold,
@@ -486,7 +489,7 @@ export async function mdToTree(
     }
 
     if (opts.addDocDescription) {
-      console.log("Generating document description...");
+      log("Generating document description...");
       const docDescription = await generateDocDescriptionMd(treeStructure, {
         model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
@@ -527,23 +530,24 @@ export async function markdownToTree(
     ...DEFAULT_MARKDOWN_OPTIONS,
     ...options,
   };
+  const log = opts.logger ?? console.log;
 
   const lineCount = countMarkdownLines(content);
 
-  console.log("Extracting nodes from markdown...");
+  log("Extracting nodes from markdown...");
   const { nodeList, lines: markdownLines } = extractNodesFromMarkdown(content);
 
-  console.log("Extracting text content from nodes...");
+  log("Extracting text content from nodes...");
   let nodesWithContent = extractNodeTextContent(nodeList, markdownLines);
 
   // Apply thinning if requested
   if (opts.thinning) {
     nodesWithContent = updateNodeListWithTextTokenCount(nodesWithContent);
-    console.log("Thinning nodes...");
+    log("Thinning nodes...");
     nodesWithContent = treeThinningForIndex(nodesWithContent, opts.thinningThreshold);
   }
 
-  console.log("Building tree from nodes...");
+  log("Building tree from nodes...");
   let treeStructure = buildTreeFromNodes(nodesWithContent);
 
   // Add node IDs if requested
@@ -557,7 +561,7 @@ export async function markdownToTree(
   if (opts.addNodeSummary) {
     treeStructure = formatStructure(treeStructure, keyOrder) as MarkdownTreeNode[];
 
-    console.log("Generating summaries for each node...");
+    log("Generating summaries for each node...");
     await generateSummariesForStructureMd(
       treeStructure,
       opts.summaryTokenThreshold,
@@ -574,7 +578,7 @@ export async function markdownToTree(
     }
 
     if (opts.addDocDescription) {
-      console.log("Generating document description...");
+      log("Generating document description...");
       const docDescription = await generateDocDescriptionMd(treeStructure, {
         model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,

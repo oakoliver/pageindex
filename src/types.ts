@@ -24,7 +24,7 @@ export interface PageIndexOptions {
   maxTokenNumEachNode?: number;
   /** Add node IDs to output (default: true) */
   addNodeId?: boolean;
-  /** Add summaries to nodes (default: true) */
+  /** Add summaries to nodes, using the LLM (default: true for PDFs; Markdown overrides it to false) */
   addNodeSummary?: boolean;
   /** Add document description (default: false) */
   addDocDescription?: boolean;
@@ -34,6 +34,11 @@ export interface PageIndexOptions {
   apiKey?: string;
   /** Base URL for API (e.g., LM Studio: http://localhost:1234/v1) */
   baseUrl?: string;
+  /**
+   * Receives progress messages (default: console.log). Pass `() => {}` to
+   * silence them, or `console.error` to keep stdout clean.
+   */
+  logger?: (message: string) => void;
   
   // OCR-specific options
   /** Extraction mode: 'text' for native PDFs, 'ocr' for scanned PDFs (default: 'text') */
@@ -51,6 +56,8 @@ export interface PageIndexOptions {
 }
 
 export interface MarkdownOptions extends PageIndexOptions {
+  /** Add summaries to nodes, using the LLM (default: false, as upstream's md_to_tree) */
+  addNodeSummary?: boolean;
   /** Apply tree thinning (default: false) */
   thinning?: boolean;
   /** Minimum token threshold for thinning (default: 5000) */

@@ -5,9 +5,9 @@
  */
 
 import { parseArgs } from "util";
-import { PageIndex, LMSTUDIO_ENDPOINT, OLLAMA_ENDPOINT } from "./pageindex";
-import { mdToTree } from "./markdown";
-import { DEFAULT_INDEX_MODEL } from "./types";
+import { PageIndex, LMSTUDIO_ENDPOINT, OLLAMA_ENDPOINT } from "./pageindex.js";
+import { mdToTree } from "./markdown.js";
+import { DEFAULT_INDEX_MODEL } from "./types.js";
 import * as path from "path";
 import * as fs from "fs";
 import * as fsp from "fs/promises";

@@ -3,7 +3,7 @@
  * Token counting, JSON extraction, tree manipulation
  */
 
-import type { TreeNode, TocItem } from "./types";
+import type { TreeNode, TocItem } from "./types.js";
 
 /**
  * Approximate token count using character-based estimation

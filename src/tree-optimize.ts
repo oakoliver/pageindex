@@ -20,7 +20,7 @@
  * remain available as routing information.
  */
 
-import type { TreeNode } from "./types";
+import type { TreeNode } from "./types.js";
 
 /** R(v): cost of visiting a node for routing, in pages */
 export const ROUTING_COST = 1;
