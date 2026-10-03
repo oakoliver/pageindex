@@ -1,6 +1,8 @@
-# bun-pageindex
+# pageindex
 
-Bun-native vectorless, reasoning-based RAG for document understanding. A TypeScript port of [PageIndex](https://github.com/VectifyAI/PageIndex) optimized for the Bun runtime.
+Vectorless, reasoning-based document indexing for RAG. A TypeScript port of the indexing side of [PageIndex](https://github.com/VectifyAI/PageIndex): it turns a PDF or Markdown document into a hierarchical tree index (sections, page ranges, optional LLM summaries) that an LLM can reason over instead of a vector database. Runs on Node.js, Bun and Deno.
+
+**Scope:** PageIndex retrieval is two steps: build the tree, then have an LLM search it. This package does the first step. Upstream's retrieve-and-chat client is not ported; [Searching the tree](#searching-the-tree) shows how to do the search step yourself.
 
 > **Upstream parity:** the standard (LLM) PDF pipeline and the Markdown pipeline are at parity with upstream PageIndex **v0.2.19** (2026-09-21). Previous baseline: upstream commit `959452d` (2026-03-04). Upstream-only surfaces that are not ported: PageIndex Flash (the deterministic PDF parser), the LLM-driven `optimize_tree` expand pass, the local/cloud SDK clients, chat/agent tools, MCP bridge and LiteLLM provider routing (this port stays on OpenAI-compatible endpoints).
 
@@ -12,7 +14,7 @@ Bun-native vectorless, reasoning-based RAG for document understanding. A TypeScr
 
 ## Features
 
-- **Vectorless RAG**: Uses LLM reasoning to build hierarchical document indices without vector databases
+- **Vectorless indexing**: Uses LLM reasoning to build hierarchical document indices without vector databases or chunking
 - **PDF Support**: Extract structure and content from PDF documents
 - **OCR Mode**: Process scanned PDFs using GLM-OCR vision model (not in original PageIndex!)
 - **Markdown Support**: Convert markdown documents to tree structures
@@ -23,7 +25,9 @@ Bun-native vectorless, reasoning-based RAG for document understanding. A TypeScr
 ## Installation
 
 ```bash
-bun add bun-pageindex
+npm install pageindex
+# or
+bun add pageindex
 ```
 
 ### For OCR Mode (Scanned PDFs)
@@ -46,7 +50,7 @@ sudo apt-get install poppler-utils
 ### As a Library
 
 ```typescript
-import { PageIndex, indexPdf, mdToTree } from "bun-pageindex";
+import { PageIndex, indexPdf, mdToTree } from "pageindex";
 
 // Process a PDF with OpenAI
 const result = await indexPdf("document.pdf", {
@@ -76,7 +80,7 @@ const mdResult = await mdToTree("document.md", {
 ### Using LM Studio (Local LLMs)
 
 ```typescript
-import { PageIndex } from "bun-pageindex";
+import { PageIndex } from "pageindex";
 
 const pageIndex = new PageIndex({
   model: "local-model", // Your LM Studio model name
@@ -88,7 +92,7 @@ const result = await pageIndex.fromPdf("document.pdf");
 ### Using Ollama
 
 ```typescript
-import { PageIndex } from "bun-pageindex";
+import { PageIndex } from "pageindex";
 
 const pageIndex = new PageIndex({
   model: "llama3",
@@ -102,7 +106,7 @@ const result = await pageIndex.fromPdf("document.pdf");
 OCR mode converts PDF pages to images and uses a vision model (like GLM-OCR) to extract text, then processes with a reasoning model.
 
 ```typescript
-import { PageIndex, indexPdfWithOcr, indexPdfWithLMStudioOcr } from "bun-pageindex";
+import { PageIndex, indexPdfWithOcr, indexPdfWithLMStudioOcr } from "pageindex";
 
 // Using OpenAI
 const result = await indexPdfWithOcr("scanned-document.pdf", {
@@ -133,22 +137,22 @@ const result = await pageIndex.fromPdf("scanned-document.pdf");
 
 ```bash
 # Process a PDF
-bun-pageindex --pdf document.pdf
+pageindex --pdf document.pdf
 
 # Process with LM Studio
-bun-pageindex --pdf document.pdf --lmstudio --model llama3
+pageindex --pdf document.pdf --lmstudio --model llama3
 
 # Process scanned PDF with OCR
-bun-pageindex --pdf scanned.pdf --ocr --lmstudio --model qwen/qwen3-vl-30b
+pageindex --pdf scanned.pdf --ocr --lmstudio --model qwen/qwen3-vl-30b
 
 # Process markdown with options (Markdown runs no LLM passes unless asked)
-bun-pageindex --md README.md --add-node-summary --add-doc-description --thinning
+pageindex --md README.md --add-node-summary --add-doc-description --thinning
 
 # Separate models for indexing and summaries
-bun-pageindex --pdf document.pdf --index-model gpt-5.6-luna --summary-model gpt-4.1-mini
+pageindex --pdf document.pdf --index-model gpt-5.6-luna --summary-model gpt-4.1-mini
 
 # See all options
-bun-pageindex --help
+pageindex --help
 ```
 
 <img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/cli.png" alt="Running bun src/cli.ts --md examples/weather-station.md --no-node-summary -o /tmp/ws.json, followed by the first lines of the JSON tree it writes: docName, then nested nodes with title, nodeId and lineNum" width="720">
@@ -236,6 +240,43 @@ interface TreeNode {
 - **Fail-loud LLM errors**: 400/401/403/404 are not retried; exhausted retries throw `LLMRetriesExhausted` instead of returning `"Error"`. Bad credentials or a missing model fail the run; per-prompt failures (e.g. context overflow) leave an empty summary/description; if every summary comes back empty the run fails.
 - `temperature` is no longer sent unless you pass one explicitly; `CHATGPT_API_KEY` is accepted as a deprecated alias for `OPENAI_API_KEY`.
 
+## Searching the tree
+
+The tree is the index; retrieval is a second LLM call that reads the outline
+(titles, node IDs and summaries, without the body text), picks the nodes likely
+to answer the question, and then reads only those nodes:
+
+```typescript
+import OpenAI from "openai";
+import { mdToTree, type TreeNode } from "pageindex";
+
+const { structure } = await mdToTree("handbook.md", { addNodeSummary: true, addNodeText: true });
+
+// 1. Let the model choose nodes from the outline alone
+const outline = JSON.stringify(structure, (key, value) => (key === "text" ? undefined : value));
+const response = await new OpenAI().chat.completions.create({
+  model: "gpt-4o-2024-11-20",
+  response_format: { type: "json_object" },
+  messages: [{
+    role: "user",
+    content: `Question: ${question}\n\nDocument tree:\n${outline}\n\n` +
+      'Reply with JSON {"node_ids": [...]} listing the nodes most likely to contain the answer.',
+  }],
+});
+const { node_ids = [] } = JSON.parse(response.choices[0]?.message.content ?? "{}");
+
+// 2. Read only the chosen sections
+const byId = new Map<string, TreeNode>();
+const walk = (nodes: TreeNode[]) =>
+  nodes.forEach((node) => { if (node.nodeId) byId.set(node.nodeId, node); walk(node.nodes ?? []); });
+walk(structure);
+const context = node_ids.map((id: string) => byId.get(id)?.text ?? "").join("\n\n");
+```
+
+A runnable version is in [`examples/tree-search.ts`](examples/tree-search.ts).
+For long documents, search level by level (expand only the chosen nodes'
+children) instead of sending the whole outline at once.
+
 ## Benchmarks
 
 Run benchmarks comparing Bun vs Python implementations:
@@ -277,7 +318,7 @@ PageIndex uses LLM reasoning to:
 
 This approach provides human-like document understanding without the limitations of vector-based retrieval.
 
-### OCR Mode (New in bun-pageindex)
+### OCR Mode (not in upstream PageIndex)
 
 For scanned PDFs, OCR mode adds an additional step:
 
