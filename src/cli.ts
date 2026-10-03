@@ -5,7 +5,7 @@
  */
 
 import { parseArgs } from "util";
-import { PageIndex } from "./pageindex";
+import { PageIndex, LMSTUDIO_ENDPOINT, OLLAMA_ENDPOINT } from "./pageindex";
 import { mdToTree } from "./markdown";
 import { DEFAULT_INDEX_MODEL } from "./types";
 import * as path from "path";
@@ -255,8 +255,16 @@ async function main(): Promise<void> {
     console.log(`Processing Markdown: ${mdPath}`);
 
     // Process Markdown
+    // Same endpoint selection as the PDF path
+    const endpoint = args.lmstudio
+      ? LMSTUDIO_ENDPOINT
+      : args.ollama
+        ? OLLAMA_ENDPOINT
+        : { baseUrl: args.baseUrl };
+
     // Markdown runs no LLM passes unless asked: summaries are off by default
     result = await mdToTree(mdPath, {
+      ...endpoint,
       model: args.model,
       summaryModel: args.summaryModel,
       addNodeId: args.addNodeId,

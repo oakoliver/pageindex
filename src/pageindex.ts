@@ -32,6 +32,10 @@ interface InternalOptions extends TreeOptions {
   ocrConcurrency: number;
 }
 
+/** Local OpenAI-compatible endpoint presets (LM Studio, Ollama). */
+export const LMSTUDIO_ENDPOINT = { baseUrl: "http://localhost:1234/v1", apiKey: "lm-studio" } as const;
+export const OLLAMA_ENDPOINT = { baseUrl: "http://localhost:11434/v1", apiKey: "ollama" } as const;
+
 const DEFAULT_OPTIONS: Required<Omit<PageIndexOptions, "apiKey" | "baseUrl" | "summaryModel">> = {
   model: DEFAULT_INDEX_MODEL,
   tocCheckPageNum: 20,
@@ -92,8 +96,7 @@ export class PageIndex {
    * Use LM Studio configuration
    */
   useLMStudio(): this {
-    this.options.baseUrl = "http://localhost:1234/v1";
-    this.options.apiKey = "lm-studio";
+    Object.assign(this.options, LMSTUDIO_ENDPOINT);
     return this;
   }
 
@@ -101,8 +104,7 @@ export class PageIndex {
    * Use Ollama configuration
    */
   useOllama(): this {
-    this.options.baseUrl = "http://localhost:11434/v1";
-    this.options.apiKey = "ollama";
+    Object.assign(this.options, OLLAMA_ENDPOINT);
     return this;
   }
 

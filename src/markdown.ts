@@ -475,7 +475,7 @@ export async function mdToTree(
       {
         model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
-        baseUrl: undefined,
+        baseUrl: opts.baseUrl,
       }
     );
 
@@ -490,7 +490,7 @@ export async function mdToTree(
       const docDescription = await generateDocDescriptionMd(treeStructure, {
         model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
-        baseUrl: undefined,
+        baseUrl: opts.baseUrl,
       });
 
       return {
@@ -564,7 +564,7 @@ export async function markdownToTree(
       {
         model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
-        baseUrl: undefined,
+        baseUrl: opts.baseUrl,
       }
     );
 
@@ -578,7 +578,7 @@ export async function markdownToTree(
       const docDescription = await generateDocDescriptionMd(treeStructure, {
         model: opts.summaryModel || opts.model,
         apiKey: opts.apiKey,
-        baseUrl: undefined,
+        baseUrl: opts.baseUrl,
       });
 
       return {
