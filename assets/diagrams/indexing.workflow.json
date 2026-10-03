@@ -1,0 +1,209 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "How pageindex builds a tree index",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Deterministic step"
+        },
+        "cloud": {
+          "label": "LLM call"
+        },
+        "database": {
+          "label": "Output"
+        },
+        "external": {
+          "label": "Input document"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "pdfin",
+      "label": "PDF input"
+    },
+    {
+      "id": "llm",
+      "label": "LLM reasoning (OpenAI-compatible API)"
+    },
+    {
+      "id": "local",
+      "label": "Local, no LLM"
+    },
+    {
+      "id": "mdin",
+      "label": "Markdown input"
+    }
+  ],
+  "mainPath": [
+    "pdf",
+    "pages",
+    "toc",
+    "entries",
+    "verify",
+    "tree",
+    "result"
+  ],
+  "nodes": [
+    {
+      "id": "pdf",
+      "lane": "pdfin",
+      "col": 0,
+      "type": "external",
+      "label": "PDF file",
+      "width": 132
+    },
+    {
+      "id": "pages",
+      "lane": "pdfin",
+      "col": 1,
+      "type": "backend",
+      "label": "Page text",
+      "sublabel": "pdf-parse, or OCR",
+      "tag": "Poppler + vision model",
+      "width": 150
+    },
+    {
+      "id": "toc",
+      "lane": "llm",
+      "col": 2,
+      "type": "cloud",
+      "label": "Detect TOC",
+      "sublabel": "page numbers given?",
+      "width": 140
+    },
+    {
+      "id": "entries",
+      "lane": "llm",
+      "col": 3,
+      "type": "cloud",
+      "label": "TOC entries",
+      "sublabel": "from TOC or content",
+      "width": 140
+    },
+    {
+      "id": "verify",
+      "lane": "llm",
+      "col": 4,
+      "type": "cloud",
+      "label": "Verify + fix",
+      "sublabel": "titles vs pages",
+      "width": 140
+    },
+    {
+      "id": "summaries",
+      "lane": "llm",
+      "col": 5,
+      "type": "cloud",
+      "label": "Summaries",
+      "sublabel": "optional",
+      "width": 132
+    },
+    {
+      "id": "tree",
+      "lane": "local",
+      "col": 4,
+      "type": "backend",
+      "label": "Build tree",
+      "sublabel": "nest + node IDs",
+      "width": 140
+    },
+    {
+      "id": "result",
+      "lane": "local",
+      "col": 5,
+      "type": "database",
+      "label": "Tree index",
+      "sublabel": "JSON structure",
+      "width": 132
+    },
+    {
+      "id": "md",
+      "lane": "mdin",
+      "col": 0,
+      "type": "external",
+      "label": "Markdown file",
+      "width": 132
+    },
+    {
+      "id": "headings",
+      "lane": "mdin",
+      "col": 1,
+      "type": "backend",
+      "label": "Headings",
+      "sublabel": "# levels → nodes",
+      "width": 150
+    },
+    {
+      "id": "thin",
+      "lane": "mdin",
+      "col": 2,
+      "type": "backend",
+      "label": "Thinning",
+      "sublabel": "optional merge",
+      "width": 140
+    }
+  ],
+  "edges": [
+    {
+      "id": "pdf-pages",
+      "from": "pdf",
+      "to": "pages"
+    },
+    {
+      "id": "pages-toc",
+      "from": "pages",
+      "to": "toc",
+      "variant": "emphasis"
+    },
+    {
+      "id": "toc-entries",
+      "from": "toc",
+      "to": "entries"
+    },
+    {
+      "id": "entries-verify",
+      "from": "entries",
+      "to": "verify"
+    },
+    {
+      "id": "verify-tree",
+      "from": "verify",
+      "to": "tree",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tree-result",
+      "from": "tree",
+      "to": "result"
+    },
+    {
+      "id": "tree-summaries",
+      "from": "tree",
+      "to": "summaries",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "md-headings",
+      "from": "md",
+      "to": "headings"
+    },
+    {
+      "id": "headings-thin",
+      "from": "headings",
+      "to": "thin"
+    },
+    {
+      "id": "thin-tree",
+      "from": "thin",
+      "to": "tree",
+      "variant": "emphasis"
+    }
+  ]
+}
