@@ -42,11 +42,11 @@ interface CliArgs {
 
 function printHelp(): void {
   console.log(`
-bun-pageindex - Vectorless, reasoning-based RAG for document understanding
+pageindex - Vectorless, reasoning-based tree indexes for document understanding
 
 USAGE:
-  bun-pageindex --pdf <path>     Process a PDF file
-  bun-pageindex --md <path>      Process a Markdown file
+  pageindex --pdf <path>     Process a PDF file
+  pageindex --md <path>      Process a Markdown file
 
 OPTIONS:
   --pdf <path>                 Path to PDF file
@@ -88,11 +88,11 @@ OPTIONS:
   --help, -h                   Show this help message
 
 EXAMPLES:
-  bun-pageindex --pdf document.pdf
-  bun-pageindex --md README.md --add-doc-description
-  bun-pageindex --pdf paper.pdf --lmstudio --model llama3
-  bun-pageindex --pdf report.pdf --base-url http://localhost:8080/v1
-  bun-pageindex --pdf scanned.pdf --ocr --lmstudio --model qwen/qwen3-vl-30b
+  pageindex --pdf document.pdf
+  pageindex --md README.md --add-doc-description
+  pageindex --pdf paper.pdf --lmstudio --model llama3
+  pageindex --pdf report.pdf --base-url http://localhost:8080/v1
+  pageindex --pdf scanned.pdf --ocr --lmstudio --model qwen/qwen3-vl-30b
 `);
 }
 
