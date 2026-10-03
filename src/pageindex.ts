@@ -3,9 +3,9 @@
  * Primary entry point for PDF document indexing
  */
 
-import { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf";
-import { parsePdfWithOcr, type OcrOptions } from "./ocr";
-import { checkToc, checkTitleAppearanceInStartConcurrent, type TocOptions } from "./toc";
+import { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf.js";
+import { parsePdfWithOcr, type OcrOptions } from "./ocr.js";
+import { checkToc, checkTitleAppearanceInStartConcurrent, type TocOptions } from "./toc.js";
 import {
   processNoToc,
   processTocNoPageNumbers,
@@ -18,10 +18,10 @@ import {
   fixIncorrectToc,
   PDF_KEY_ORDER,
   type TreeOptions,
-} from "./tree";
-import { convertPhysicalIndexToInt, formatStructure } from "./utils";
-import { DEFAULT_INDEX_MODEL } from "./types";
-import type { PageIndexOptions, PageIndexResult, TreeNode, TocItem, ExtractionMode } from "./types";
+} from "./tree.js";
+import { convertPhysicalIndexToInt, formatStructure } from "./utils.js";
+import { DEFAULT_INDEX_MODEL } from "./types.js";
+import type { PageIndexOptions, PageIndexResult, TreeNode, TocItem, ExtractionMode } from "./types.js";
 
 interface InternalOptions extends TreeOptions {
   extractionMode: ExtractionMode;

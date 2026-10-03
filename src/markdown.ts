@@ -3,16 +3,16 @@
  * Functions for building tree structures from markdown documents
  */
 
-import { chatGPT } from "./openai";
-import { DEFAULT_INDEX_MODEL, type TreeNode, type MarkdownOptions, type PageIndexResult } from "./types";
+import { chatGPT } from "./openai.js";
+import { DEFAULT_INDEX_MODEL, type TreeNode, type MarkdownOptions, type PageIndexResult } from "./types.js";
 import {
   countTokens,
   writeNodeId,
   structureToList,
   createCleanStructureForDescription,
   formatStructure,
-} from "./utils";
-import * as prompts from "./prompts";
+} from "./utils.js";
+import * as prompts from "./prompts.js";
 import * as path from "path";
 import * as fs from "fs/promises";
 

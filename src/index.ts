@@ -14,7 +14,7 @@ export {
   indexPdfWithLMStudio,
   indexPdfWithOcr,
   indexPdfWithLMStudioOcr,
-} from "./pageindex";
+} from "./pageindex.js";
 
 // Types
 export type {
@@ -27,11 +27,11 @@ export type {
   TocCheckResult,
   ExtractionMode,
   OcrPromptType,
-} from "./types";
-export { DEFAULT_INDEX_MODEL } from "./types";
+} from "./types.js";
+export { DEFAULT_INDEX_MODEL } from "./types.js";
 
 // PDF utilities
-export { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf";
+export { parsePdf, getPdfName, type PdfInfo, type PdfPage } from "./pdf.js";
 
 // OCR utilities
 export {
@@ -42,7 +42,7 @@ export {
   parsePdfWithOcr,
   getPdfInfo,
   type OcrOptions,
-} from "./ocr";
+} from "./ocr.js";
 
 // OpenAI utilities
 export {
@@ -58,7 +58,7 @@ export {
   type ClientConfig,
   type ChatOptions,
   type ChatResult,
-} from "./openai";
+} from "./openai.js";
 
 // Tree utilities
 export {
@@ -80,13 +80,13 @@ export {
   extractChunkMarkerSet,
   normalizeTocItems,
   type RawTocEntry,
-} from "./utils";
+} from "./utils.js";
 
 // Tree optimization (deterministic merge)
-export { mergeTree, treeCost, searchSpan, residualSpan, subtreeEnd } from "./tree-optimize";
+export { mergeTree, treeCost, searchSpan, residualSpan, subtreeEnd } from "./tree-optimize.js";
 
 // Prompt-injection hardening
-export { secureDocText, sanitizeDocText, wrapDocText, SYSTEM_HARDENING } from "./prompts";
+export { secureDocText, sanitizeDocText, wrapDocText, SYSTEM_HARDENING } from "./prompts.js";
 
 // Markdown processing
 export {
@@ -99,4 +99,4 @@ export {
   printTocMd,
   countMarkdownLines,
   type MarkdownHeading,
-} from "./markdown";
+} from "./markdown.js";

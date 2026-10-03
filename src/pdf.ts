@@ -4,8 +4,8 @@
  */
 
 import { PDFParse } from "pdf-parse";
-import { countTokens } from "./utils";
-import type { PageContent } from "./types";
+import { countTokens } from "./utils.js";
+import type { PageContent } from "./types.js";
 import * as fs from "fs/promises";
 
 export interface PdfPage {

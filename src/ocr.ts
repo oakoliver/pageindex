@@ -10,8 +10,8 @@ import * as os from "os";
 import * as fs from "fs/promises";
 import OpenAI from "openai";
 import type { ChatCompletionContentPart } from "openai/resources/chat/completions";
-import { countTokens } from "./utils";
-import type { PdfPage } from "./pdf";
+import { countTokens } from "./utils.js";
+import type { PdfPage } from "./pdf.js";
 
 const execAsync = promisify(exec);
 
