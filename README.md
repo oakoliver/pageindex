@@ -12,6 +12,8 @@ Vectorless, reasoning-based document indexing for RAG. A TypeScript port of the 
 
 <sub>Recorded with <a href="https://github.com/oakoliver/vhs">@oakoliver/vhs</a> from <a href="examples/tree.ts"><code>examples/tree.ts</code></a> on <a href="examples/sample-design-doc.md">an invented design document</a>. Markdown indexing with summaries off makes no LLM calls, so this runs offline.</sub>
 
+**Read the article:** [Getting Started with pageindex](https://engineering.oakoliver.com/articles/getting-started-pageindex-tree-indexes-reasoning-rag) · [Why bm25s and pageindex were ported to TypeScript](https://engineering.oakoliver.com/articles/bringing-python-ml-libraries-to-javascript-bm25s-pageindex)
+
 ## Features
 
 - **Vectorless indexing**: Uses LLM reasoning to build hierarchical document indices without vector databases or chunking
