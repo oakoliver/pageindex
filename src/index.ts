@@ -53,7 +53,13 @@ export {
   getOllamaConfig,
   setChatClient,
   isUnrecoverable,
+  shouldRetry,
+  retryAfter,
+  retryDelay,
   LLMRetriesExhausted,
+  RETRY_STATUS,
+  INDEX_RETRIES,
+  INDEX_MAX_DELAY,
   type ChatClient,
   type ClientConfig,
   type ChatOptions,
@@ -79,11 +85,55 @@ export {
   validateChunkPhysicalIndices,
   extractChunkMarkerSet,
   normalizeTocItems,
+  INTRO_SUFFIX,
+  introTitle,
+  isIntro,
+  ownPages,
+  coverSubtreeRanges,
+  getTextOfPdfPages,
+  getNode,
+  getNodeParent,
+  getNodePath,
+  getNodeMap,
+  createNodeMapping,
   type RawTocEntry,
+  type NodeMapping,
 } from "./utils.js";
 
-// Tree optimization (deterministic merge)
-export { mergeTree, treeCost, searchSpan, residualSpan, subtreeEnd } from "./tree-optimize.js";
+// Tree building (PDF)
+export {
+  buildTree,
+  addNodeText,
+  processLargeNodeRecursively,
+  metaProcessorNoToc,
+  generateDocDescription,
+  type LargeNodeSteps,
+} from "./tree.js";
+
+// Bottom-up summaries (PDF)
+export {
+  summarizeTree,
+  fallbackSummary,
+  getIntroText,
+  parseSummary,
+  SUMMARY_CONCURRENCY,
+  STANDARD_SUMMARY_CONCURRENCY,
+  SUMMARY_INTRO_MAX_PAGES,
+  SUMMARY_MAX_WORDS,
+  type SummarizeTreeOptions,
+} from "./summary.js";
+
+// Tree optimization (deterministic merge, intro nodes)
+export {
+  mergeTree,
+  treeCost,
+  searchSpan,
+  residualSpan,
+  subtreeEnd,
+  addIntroNodes,
+  headingAtPageStart,
+  normalize,
+} from "./tree-optimize.js";
 
 // Prompt-injection hardening
 export { secureDocText, sanitizeDocText, wrapDocText, SYSTEM_HARDENING } from "./prompts.js";

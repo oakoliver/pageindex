@@ -17,10 +17,15 @@
  *
  * When a subtree is merged away, the removed titles are kept on the parent as
  * `keyItems`: the pages stay reachable by scanning the parent, and the titles
- * remain available as routing information.
+ * remain available as routing information. An intro node's title is its
+ * parent's heading again, so it is not listed.
+ *
+ * Also here, as upstream: `addIntroNodes`, which gives every parent whose first
+ * child starts on a later page an "<title> (intro)" child for those pages.
  */
 
 import type { TreeNode } from "./types.js";
+import { introTitle, isIntro } from "./utils.js";
 
 /** R(v): cost of visiting a node for routing, in pages */
 export const ROUTING_COST = 1;
@@ -32,6 +37,21 @@ function flatten(nodes: TreeNode[]): TreeNode[] {
     result.push(node);
     if (node.nodes) {
       result.push(...flatten(node.nodes));
+    }
+  }
+  return result;
+}
+
+/** Like flatten, with each node's parent inside the walk (undefined at the top) */
+function flattenWithParent(
+  nodes: TreeNode[],
+  parent?: TreeNode
+): Array<[TreeNode, TreeNode | undefined]> {
+  const result: Array<[TreeNode, TreeNode | undefined]> = [];
+  for (const node of nodes) {
+    result.push([node, parent]);
+    if (node.nodes) {
+      result.push(...flattenWithParent(node.nodes, node));
     }
   }
   return result;
@@ -131,8 +151,11 @@ export function merge(structure: TreeNode[], routing: number = ROUTING_COST): bo
       // Titles are routing information: keep them on the parent, in document
       // order, carrying forward anything an earlier merge already folded in
       const titles: string[] = [];
-      for (const child of flatten(node.nodes!)) {
-        titles.push(child.title);
+      for (const [child, parent] of flattenWithParent(node.nodes!)) {
+        if (!isIntro(parent ?? node, child)) {
+          // an intro's title is its parent's heading again
+          titles.push(child.title);
+        }
         titles.push(...(child.keyItems || []));
       }
       node.endIndex = subtreeEnd(node);
@@ -156,5 +179,63 @@ export function merge(structure: TreeNode[], routing: number = ROUTING_COST): bo
  */
 export function mergeTree(structure: TreeNode[]): TreeNode[] {
   merge(structure, ROUTING_COST);
+  return structure;
+}
+
+// ===================== Intro nodes (upstream v0.2.21) =====================
+
+const HAN_KANA = "\u3005-\u3007\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff";
+const HAN_GAP = new RegExp(`(?<=[${HAN_KANA}]) (?=[${HAN_KANA}])`, "gu");
+
+/**
+ * Letters, digits and marks of any script, case-folded; other runs become one
+ * space, and none stays between two Han or kana characters (those scripts put
+ * no space between words, so one there is layout). JavaScript has no Unicode
+ * case folding; lower-casing plus ß -> ss covers the cases that matter here.
+ */
+export function normalize(text: string | undefined | null): string {
+  const folded = (text ?? "").normalize("NFKC").toLowerCase().replace(/ß/g, "ss");
+  const kept = folded.replace(/[^\p{L}\p{M}\p{N}]+/gu, " ").trim().split(/\s+/).filter(Boolean).join(" ");
+  return kept.replace(HAN_GAP, "");
+}
+
+/**
+ * Is the heading the first line on its page? No when that cannot be told (a
+ * heading with no Latin letter to match, or a first line that a later line
+ * repeats, as a running header does), so the page is shared.
+ */
+export function headingAtPageStart(lines: string[][], pageNo: number, heading: string): boolean {
+  const page = lines[pageNo - 1];
+  const key = normalize(heading);
+  if (!page || page.length === 0 || !/[a-z]/.test(key)) {
+    return false;
+  }
+  const starts = page.map((line) => (normalize(line) + " ").startsWith(key + " "));
+  return starts[0]! && !starts.slice(1).some(Boolean);
+}
+
+/**
+ * Give every parent whose first child starts on a later page an intro child
+ * for the pages before it, titled "<parent title> (intro)". It ends where the
+ * parent's own pages do, and no later than the first child's page: the page
+ * before it when that child's heading opens its page (known only from
+ * per-page `lines`; the standard pipeline has none, so the page is shared).
+ * Mutates and returns the structure.
+ */
+export function addIntroNodes(structure: TreeNode[], lines?: string[][]): TreeNode[] {
+  for (const node of flatten(structure)) {
+    const children = node.nodes || [];
+    const first = children.length > 0 ? children[0]!.startIndex : undefined;
+    const start = node.startIndex;
+    if (first === undefined || start === undefined || first <= start) {
+      continue;
+    }
+    const opens =
+      !!lines && lines.length > 0 && first <= lines.length &&
+      headingAtPageStart(lines, first, children[0]!.title);
+    const ownEnd = node.endIndex ?? first;
+    const end = Math.max(start, Math.min(ownEnd, opens ? first - 1 : first));
+    node.nodes = [{ title: introTitle(node.title), startIndex: start, endIndex: end }, ...children];
+  }
   return structure;
 }

@@ -394,3 +394,73 @@ Document Structure: ${structure}
 
 Directly return the description, do not include any other text.`;
 }
+
+// ===================== Bottom-up summaries (upstream summarize_tree, v0.5.0) =====================
+//
+// Byte-identical to upstream's SummaryScheduler prompts, indentation and
+// trailing whitespace included (upstream writes them as indented f-strings).
+// Not hardened, as upstream: the summary prompts send the text as-is.
+
+/**
+ * Prompt for a leaf node's summary: the node's own pages, a word cap, and a
+ * JSON reply with the summary alone.
+ */
+export function leafSummaryPrompt(text: string, maxWords: number): string {
+  return `You are given a text chunk from a document.
+    Your task is to generate a concise description of everything that is covered in the text, summarizing all its points without omitting any type of content.
+    Keep the description concise and to the point, avoiding unnecessary details, within ${maxWords} words.
+
+    Given Text: ${text}
+
+    Reply strictly in the following JSON format:
+    {
+        "summary": <a concise description of everything that is covered in the text, summarizing all its points without omitting any type of content>
+    }
+
+    Follow strictly the above JSON return format. Do not include any other text!
+    `;
+}
+
+/**
+ * Prompt for a parent node's summary, composed from the pages that open the
+ * section (before its first child) and its children's titles and summaries.
+ * `listing` is the children as Python's json.dumps writes them (see pyJsonList).
+ */
+export function parentSummaryPrompt(
+  title: string,
+  intro: string,
+  listing: string,
+  maxWords: number
+): string {
+  return `You are given a section of a document: the text that opens the section (possibly empty) and the titles and summaries of its subsections.
+    Your task is to generate a concise description of everything that is covered in the whole section, summarizing all its points without omitting any type of content.
+    Keep the description concise and to the point, avoiding unnecessary details, within ${maxWords} words.
+
+    Section Title: ${title}
+
+    Opening Text: ${intro}
+
+    Subsection Titles and Summaries: ${listing}
+
+    Reply strictly in the following JSON format:
+    {
+        "summary": <a concise description of everything that is covered in the section, summarizing all its points without omitting any type of content>
+    }
+
+    Follow strictly the above JSON return format. Do not include any other text!
+    `;
+}
+
+/**
+ * A list of flat string records as Python's `json.dumps(..., ensure_ascii=False)`
+ * writes it (", " and ": " separators), so prompts match upstream byte for byte.
+ */
+export function pyJsonList(records: Array<Record<string, string>>): string {
+  const item = (record: Record<string, string>) =>
+    "{" +
+    Object.entries(record)
+      .map(([key, value]) => `${JSON.stringify(key)}: ${JSON.stringify(value)}`)
+      .join(", ") +
+    "}";
+  return "[" + records.map(item).join(", ") + "]";
+}

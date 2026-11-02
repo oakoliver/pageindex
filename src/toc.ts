@@ -3,7 +3,7 @@
  * Functions for detecting, extracting, and processing table of contents
  */
 
-import { chatGPT, chatGPTWithFinishReason, type ClientConfig } from "./openai.js";
+import { chatGPT, chatGPTWithFinishReason, isUnrecoverable, type ClientConfig } from "./openai.js";
 import type { PdfPage } from "./pdf.js";
 import type { TocItem, TocCheckResult } from "./types.js";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
@@ -506,6 +506,9 @@ export async function checkTitleAppearanceInStartConcurrent(
       const appearStart = await checkTitleAppearanceInStart(item.title, pageText, options);
       results.push({ ...item, appearStart });
     } catch (error) {
+      // Out of retries, bad credentials or a missing model stop the run
+      // (upstream v0.5.0); a per-prompt failure reads as "no"
+      if (isUnrecoverable(error)) throw error;
       console.error(`Error checking start for ${item.title}:`, error);
       results.push({ ...item, appearStart: "no" });
     }

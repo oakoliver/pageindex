@@ -18,9 +18,13 @@ import {
   validateChunkPhysicalIndices,
   validatePhysicalIndices,
   extractChunkMarkerSet,
+  ownPages,
+  getTextOfPdfPages,
+  getTextOfPdfPagesWithLabels,
+  INTRO_SUFFIX,
   type RawTocEntry,
 } from "./utils.js";
-import { mergeTree } from "./tree-optimize.js";
+import { addIntroNodes, mergeTree } from "./tree-optimize.js";
 import * as prompts from "./prompts.js";
 import {
   tocTransformer,
@@ -37,6 +41,8 @@ import {
 export interface TreeOptions extends TocOptions {
   /** Model for node summaries and the document description (default: model) */
   summaryModel?: string;
+  /** Receives progress messages (default: console.log) */
+  logger?: (message: string) => void;
   maxPageNumEachNode: number;
   maxTokenNumEachNode: number;
   addNodeId: boolean;
@@ -310,7 +316,10 @@ export async function processTocWithPageNumbers(
 }
 
 /**
- * Add text content to tree nodes
+ * Add text content to tree nodes: each node's own pages. A parent's text runs
+ * onto the page its first child starts on (that child's heading may sit
+ * mid-page), and is empty when an intro node holds its opening pages
+ * (upstream v0.2.21).
  */
 export function addNodeText(
   node: TreeNode | TreeNode[],
@@ -323,16 +332,8 @@ export function addNodeText(
     return;
   }
 
-  const startPage = node.startIndex;
-  const endPage = node.endIndex;
-
-  if (startPage !== undefined && endPage !== undefined) {
-    let text = "";
-    for (let i = startPage - 1; i < endPage && i < pages.length; i++) {
-      text += pages[i]?.text || "";
-    }
-    node.text = text;
-  }
+  const [startPage, endPage] = ownPages(node);
+  node.text = getTextOfPdfPages(pages, startPage, endPage);
 
   if (node.nodes) {
     addNodeText(node.nodes, pages);
@@ -340,7 +341,7 @@ export function addNodeText(
 }
 
 /**
- * Add text content to tree nodes with page labels
+ * Add text content to tree nodes with page labels (own pages, as addNodeText)
  */
 export function addNodeTextWithLabels(
   node: TreeNode | TreeNode[],
@@ -353,16 +354,8 @@ export function addNodeTextWithLabels(
     return;
   }
 
-  const startPage = node.startIndex;
-  const endPage = node.endIndex;
-
-  if (startPage !== undefined && endPage !== undefined) {
-    let text = "";
-    for (let i = startPage - 1; i < endPage && i < pages.length; i++) {
-      text += `<physical_index_${i + 1}>\n${pages[i]?.text || ""}\n<physical_index_${i + 1}>\n`;
-    }
-    node.text = text;
-  }
+  const [startPage, endPage] = ownPages(node);
+  node.text = getTextOfPdfPagesWithLabels(pages, startPage, endPage);
 
   if (node.nodes) {
     addNodeTextWithLabels(node.nodes, pages);
@@ -388,7 +381,9 @@ async function generateNodeSummary(
 }
 
 /**
- * Generate summaries for all nodes in structure
+ * Generate a summary for every node from its `text` (upstream's
+ * `generate_summaries_for_structure`). The PDF pipeline no longer uses it:
+ * since upstream v0.2.21 it summarizes bottom-up with `summarizeTree`.
  */
 export async function generateSummariesForStructure(
   structure: TreeNode[],
@@ -433,9 +428,12 @@ export async function generateSummariesForStructure(
  */
 export async function generateDocDescription(
   structure: TreeNode[],
-  options: TreeOptions
+  options: TreeOptions,
+  { topLevelOnly = false }: { topLevelOnly?: boolean } = {}
 ): Promise<string> {
-  const cleanStructure = createCleanStructureForDescription(structure);
+  // topLevelOnly: parent summaries already cover their subtrees, so the
+  // description reads the top level alone (upstream v0.4.0)
+  const cleanStructure = createCleanStructureForDescription(structure, topLevelOnly);
   const prompt = prompts.generateDocDescriptionPrompt(JSON.stringify(cleanStructure));
 
   try {
@@ -466,6 +464,8 @@ export async function verifyToc(
 ): Promise<{
   correct: TocItem[];
   incorrect: Array<{ listIndex: number; title: string; physicalIndex?: number }>;
+  /** Share of the checked items confirmed (items whose check failed are not counted) */
+  accuracy: number;
 }> {
   const correct: TocItem[] = [];
   const incorrect: Array<{ listIndex: number; title: string; physicalIndex?: number }> = [];
@@ -479,7 +479,10 @@ export async function verifyToc(
     try {
       result = await checkTitleAppearance(itemWithIndex, pages, startIndex, options);
     } catch (error) {
-      // Skip items whose check failed (LLM error); they count neither way
+      // A call out of retries, bad credentials or a missing model stop the
+      // run (upstream v0.5.0); other failures (a per-prompt 400) skip the
+      // item, which then counts neither way
+      if (isUnrecoverable(error)) throw error;
       console.error(`Error verifying TOC item "${item.title}":`, error);
       continue;
     }
@@ -495,7 +498,8 @@ export async function verifyToc(
     }
   }
 
-  return { correct, incorrect };
+  const checked = correct.length + incorrect.length;
+  return { correct, incorrect, accuracy: checked > 0 ? correct.length / checked : 0 };
 }
 
 /**
@@ -556,40 +560,37 @@ export async function fixIncorrectToc(
 
     const contentRange = pageContents.join("");
     let physicalIndexInt: number | null;
+    let checkResult: Awaited<ReturnType<typeof checkTitleAppearance>>;
     try {
       physicalIndexInt = await singleTocItemIndexFixer(
         incorrectItem.title,
         contentRange,
         options
       );
+      // Check the proposed page before it replaces the old one
+      const checkItem: TocItem = {
+        ...(fixed[listIndex] ?? { title: incorrectItem.title }),
+        physicalIndex: physicalIndexInt ?? undefined,
+        listIndex,
+      };
+      checkResult = await checkTitleAppearance(checkItem, pages, startIndex, options);
     } catch (error) {
-      // An LLM failure drops this item from the results (it is neither fixed nor re-queued)
+      // Out of retries, bad credentials or a missing model stop the run
+      // (upstream v0.5.0); any other failure drops this item from the results
+      // (it is neither fixed nor re-queued)
+      if (isUnrecoverable(error)) throw error;
       console.error(`Error fixing TOC item "${incorrectItem.title}":`, error);
       continue;
     }
 
-    if (physicalIndexInt !== null && fixed[listIndex]) {
+    if (checkResult.answer === "yes" && physicalIndexInt !== null && fixed[listIndex]) {
       fixed[listIndex].physicalIndex = physicalIndexInt;
-
-      // Verify the fix
-      const checkItem = { ...fixed[listIndex]!, listIndex };
-      let checkResult: Awaited<ReturnType<typeof checkTitleAppearance>>;
-      try {
-        checkResult = await checkTitleAppearance(checkItem, pages, startIndex, options);
-      } catch (error) {
-        console.error(`Error checking fixed TOC item "${incorrectItem.title}":`, error);
-        continue;
-      }
-
-      if (checkResult.answer !== "yes") {
-        stillIncorrect.push({
-          listIndex,
-          title: incorrectItem.title,
-          physicalIndex: physicalIndexInt,
-        });
-      }
     } else {
-      stillIncorrect.push(incorrectItem);
+      stillIncorrect.push({
+        listIndex,
+        title: incorrectItem.title,
+        physicalIndex: physicalIndexInt ?? undefined,
+      });
     }
   }
 
@@ -597,7 +598,9 @@ export async function fixIncorrectToc(
 }
 
 /**
- * Build final tree structure from TOC items
+ * Build a tree from placed TOC items without any LLM call: preface, page
+ * ranges, intro nodes, the deterministic merge and node IDs. The PDF pipeline
+ * also splits large nodes with the LLM in between (processLargeNodeRecursively).
  */
 export function buildTree(
   tocItems: TocItem[],
@@ -607,8 +610,9 @@ export function buildTree(
   // Add preface if needed
   const withPreface = addPrefaceIfNeeded(tocItems);
 
-  // Post-process: add start/end indices and convert to tree
-  const tree = postProcessing(withPreface, endPhysicalIndex);
+  // Post-process: add start/end indices and convert to tree; give every
+  // parent that opens before its first child an intro node
+  const tree = addIntroNodes(postProcessing(withPreface, endPhysicalIndex));
 
   // Collapse subtrees that do not beat a linear scan (deterministic, no LLM)
   mergeTree(tree);
@@ -633,3 +637,117 @@ export const PDF_KEY_ORDER = [
   "text",
   "nodes",
 ];
+
+// ===================== Large nodes (upstream process_large_node_recursively) =====================
+
+type PlacedTocItem = TocItem & { startIndex?: number; endIndex?: number };
+
+/**
+ * Upstream's `meta_processor` in its `process_no_toc` mode, as large-node
+ * splitting runs it over a node's pages: build entries from the content,
+ * verify them, fix them (up to three rounds) when more than 60% check out, and
+ * fail when fewer do. `pages` is the node's slice; `startIndex` its first page.
+ */
+export async function metaProcessorNoToc(
+  pages: PdfPage[],
+  startIndex: number,
+  options: TreeOptions
+): Promise<TocItem[]> {
+  let items = await processNoToc(pages, startIndex, options);
+  items = items.filter((item) => item.physicalIndex !== undefined && item.physicalIndex !== null);
+
+  // As upstream verify_toc: nothing placed, or nothing past the first half
+  // of the pages, scores 0 without a check
+  const last = [...items].reverse().find((item) => item.physicalIndex != null)?.physicalIndex;
+  let accuracy = 0;
+  let incorrect: Array<{ listIndex: number; title: string; physicalIndex?: number }> = [];
+  if (last !== undefined && last >= pages.length / 2) {
+    ({ accuracy, incorrect } = await verifyToc(pages, items, startIndex, options));
+  }
+  options.logger?.(`process_no_toc accuracy: ${(accuracy * 100).toFixed(2)}%`);
+
+  if (accuracy === 1 && incorrect.length === 0) {
+    return items;
+  }
+  if (accuracy > 0.6 && incorrect.length > 0) {
+    let current = items;
+    for (let attempt = 0; attempt < 3 && incorrect.length > 0; attempt++) {
+      const { fixed, stillIncorrect } = await fixIncorrectToc(current, pages, incorrect, startIndex, options);
+      current = fixed;
+      incorrect = stillIncorrect;
+    }
+    return current;
+  }
+  throw new Error("Processing failed");
+}
+
+/**
+ * Split a leaf that is both longer than `maxPageNumEachNode` pages and at
+ * least `maxTokenNumEachNode` tokens: its pages are indexed as a document of
+ * their own and the entries become its children (the node keeps the pages
+ * before the first one). Recurses into children. As upstream v0.2.22, a node
+ * that already has children is never split, nor are pages a split above just
+ * rebuilt unchanged (a "PART II" heading above "Chapter 3" no longer loops),
+ * and an intro node skips its parent's heading. Mutates and returns the node.
+ */
+/** Steps of the large-node split, replaceable for tests or custom pipelines */
+export interface LargeNodeSteps {
+  /** Index a node's pages as a document of their own (default: metaProcessorNoToc) */
+  metaProcessor?: (pages: PdfPage[], startIndex: number, options: TreeOptions) => Promise<TocItem[]>;
+  /** Mark where each entry opens its page (default: checkTitleAppearanceInStartConcurrent) */
+  checkTitleAppearanceInStart?: (items: TocItem[], pages: PdfPage[], options: TreeOptions) => Promise<TocItem[]>;
+}
+
+export async function processLargeNodeRecursively(
+  node: TreeNode,
+  pages: PdfPage[],
+  options: TreeOptions,
+  split?: [number, number],
+  steps: LargeNodeSteps = {}
+): Promise<TreeNode> {
+  const metaProcessor = steps.metaProcessor ?? metaProcessorNoToc;
+  const checkStart = steps.checkTitleAppearanceInStart ?? checkTitleAppearanceInStartConcurrent;
+  const start = node.startIndex;
+  const end = node.endIndex;
+  if (start !== undefined && end !== undefined) {
+    const nodePages = pages.slice(start - 1, end);
+    const tokenNum = nodePages.reduce((sum, page) => sum + (page.tokenCount || 0), 0);
+
+    if (
+      !(node.nodes && node.nodes.length > 0) &&
+      end - start > options.maxPageNumEachNode &&
+      tokenNum >= options.maxTokenNumEachNode &&
+      !(split && split[0] === start && split[1] === end)
+    ) {
+      (options.logger ?? console.log)(
+        `large node: ${node.title} start_index: ${start} end_index: ${end} token_num: ${tokenNum}`
+      );
+      split = [start, end];
+
+      let nodeToc = await metaProcessor(nodePages, start, options);
+      nodeToc = await checkStart(nodeToc, pages, options);
+      const valid = nodeToc.filter(
+        (item) => item.physicalIndex !== undefined && item.physicalIndex !== null
+      ) as PlacedTocItem[];
+
+      // an intro node's pages open with its parent's heading
+      const title = node.title.trim();
+      const parentTitle = title.endsWith(INTRO_SUFFIX) ? title.slice(0, -INTRO_SUFFIX.length) : title;
+      const firstTitle = valid[0]?.title.trim();
+      if (valid.length > 0 && (firstTitle === title || firstTitle === parentTitle)) {
+        node.nodes = postProcessing(valid.slice(1), end);
+        node.endIndex = valid.length > 1 ? valid[1]!.startIndex : end;
+      } else {
+        node.nodes = postProcessing(valid, end);
+        node.endIndex = valid.length > 0 ? valid[0]!.startIndex : end;
+      }
+    }
+  }
+
+  if (node.nodes && node.nodes.length > 0) {
+    await Promise.all(
+      node.nodes.map((child) => processLargeNodeRecursively(child, pages, options, split, steps))
+    );
+  }
+  return node;
+}

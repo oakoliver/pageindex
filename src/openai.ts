@@ -3,11 +3,20 @@
  * Supports OpenAI, LM Studio, Ollama, and other compatible endpoints
  */
 
-import OpenAI from "openai";
+import OpenAI, { APIConnectionError } from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 /** Cross-runtime sleep function */
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+let sleep: (ms: number) => Promise<void> = defaultSleep;
+
+/**
+ * Replace the wait between retries (milliseconds in, promise out). Meant for
+ * tests and custom schedulers; pass null to restore the real timer.
+ */
+export function setRetrySleep(fn: ((ms: number) => Promise<void>) | null): void {
+  sleep = fn ?? defaultSleep;
+}
 
 let clientInstance: OpenAI | null = null;
 let currentBaseUrl: string | undefined;
@@ -84,6 +93,9 @@ function getClient(config: ClientConfig = {}): ChatClient {
   clientInstance = new OpenAI({
     apiKey,
     baseURL: baseUrl,
+    // The loop in chatGPTWithFinishReason is the retry policy (as upstream,
+    // which sends max_retries=0 to LiteLLM); SDK retries would multiply it.
+    maxRetries: 0,
   });
   currentBaseUrl = baseUrl;
 
@@ -153,6 +165,144 @@ export function isUnrecoverable(error: unknown): boolean {
   return status !== undefined && UNRECOVERABLE_STATUS.has(status);
 }
 
+// ===================== Retry policy (upstream pageindex/retry.py) =====================
+
+/** Statuses retried besides 5xx, after the official OpenAI and Anthropic SDKs */
+export const RETRY_STATUS: ReadonlySet<number> = new Set([408, 409, 429]);
+
+/** Retries after the first try for an indexing call (10 attempts in all) */
+export const INDEX_RETRIES = 9;
+
+/** Longest backoff wait between indexing retries, in seconds */
+export const INDEX_MAX_DELAY = 30;
+
+/** Error codes of a request that never reached the server, or lost it */
+const NETWORK_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND",
+  "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN",
+  "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket",
+]);
+
+/** The error and every error behind it (`cause`), each once */
+function causeChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let link: unknown = error;
+  while (link !== undefined && link !== null && !chain.includes(link)) {
+    chain.push(link);
+    link = (link as { cause?: unknown }).cause;
+  }
+  return chain;
+}
+
+/** A transport failure: the request was not answered (refused, reset, timed out) */
+function isNetworkError(error: unknown): boolean {
+  return causeChain(error).some((link) => {
+    if (link instanceof APIConnectionError) return true;
+    if (!link || typeof link !== "object") return false;
+    const { name, code, message } = link as { name?: unknown; code?: unknown; message?: unknown };
+    if (name === "APIConnectionError" || name === "APIConnectionTimeoutError") return true;
+    if (typeof code === "string" && NETWORK_CODES.has(code)) return true;
+    return link instanceof TypeError && typeof message === "string" && /fetch failed|network/i.test(message);
+  });
+}
+
+/** One response header, from a Headers object or a plain record (any case) */
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const get = (headers as { get?: unknown }).get;
+  if (typeof get === "function") {
+    const value = (get as (key: string) => string | null).call(headers, name);
+    return value ?? undefined;
+  }
+  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+    if (key.toLowerCase() === name && value !== undefined && value !== null) return String(value);
+  }
+  return undefined;
+}
+
+/** Response headers carried by an LLM error, if any */
+export function getErrorHeaders(error: unknown): unknown {
+  return error && typeof error === "object" ? (error as { headers?: unknown }).headers : undefined;
+}
+
+/**
+ * A failed call worth another try: a transport failure, or a server's
+ * 408/409/429/5xx (an `x-should-retry` header overrides). An error that
+ * carries no HTTP status and no transport failure (raised before the request
+ * went out) is never retried. Errors with a numeric `status` are taken as
+ * HTTP responses: the OpenAI SDK sets it only on those.
+ */
+export function shouldRetry(error: unknown): boolean {
+  if (isNetworkError(error)) return true;
+  const status = getErrorStatus(error);
+  if (status === undefined) return false;
+  const verdict = headerValue(getErrorHeaders(error), "x-should-retry");
+  if (verdict === "true" || verdict === "false") return verdict === "true";
+  return RETRY_STATUS.has(status) || status >= 500;
+}
+
+/** The server's Retry-After in seconds (retry-after-ms first) when it names 0-60, else null */
+export function retryAfter(headers: unknown): number | null {
+  for (const [key, perSecond] of [["retry-after-ms", 1000], ["retry-after", 1]] as const) {
+    const raw = headerValue(headers, key)?.trim();
+    if (!raw) continue;
+    const value = Number(raw);
+    if (Number.isNaN(value)) continue;
+    const seconds = value / perSecond;
+    return seconds > 0 && seconds <= 60 ? seconds : null;
+  }
+  return null;
+}
+
+/**
+ * Seconds before retry `attempt` (0-based): the server's Retry-After, else
+ * doubling up to `cap`, jittered down to half.
+ */
+export function retryDelay(attempt: number, headers: unknown, cap: number): number {
+  return retryAfter(headers) ?? Math.min(cap, 2 ** attempt) * (0.5 + Math.random() * 0.5);
+}
+
+/** A 200 reply with no choices: tried again, as upstream does */
+class EmptyChoicesError extends Error {
+  constructor() {
+    super("No response from model");
+    this.name = "EmptyChoicesError";
+  }
+}
+
+/**
+ * Run one LLM request under upstream's retry ladder. 400/401/403/404 are
+ * raised as they are; a retryable failure is tried `attempts` times in all,
+ * with backoff; anything else, or the last retryable failure, becomes
+ * LLMRetriesExhausted carrying its status.
+ */
+async function withRetries<T>(attempts: number, label: string, run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      const status = getErrorStatus(error);
+      if (status !== undefined && NO_RETRY_STATUS.has(status)) {
+        throw error;
+      }
+      console.error(`[${label} ${attempt + 1}/${attempts}]`, error);
+      const retry = shouldRetry(error) || error instanceof EmptyChoicesError;
+      if (retry && attempt < attempts - 1) {
+        await sleep(retryDelay(attempt, getErrorHeaders(error), INDEX_MAX_DELAY) * 1000);
+        continue;
+      }
+      throw new LLMRetriesExhausted(
+        retry
+          ? `LLM completion failed after ${attempts} attempts: ${errorMessage(error)}`
+          : `LLM completion failed: ${errorMessage(error)}`,
+        status,
+        { cause: error }
+      );
+    }
+  }
+}
+
 /**
  * Call ChatGPT-compatible API with retry logic
  * Works with OpenAI, LM Studio, Ollama, etc.
@@ -184,7 +334,7 @@ export async function chatGPTWithFinishReason(
     baseUrl,
     chatHistory,
     temperature,
-    maxRetries = 10,
+    maxRetries = INDEX_RETRIES + 1,
   } = options;
 
   const client = getClient({ apiKey, baseUrl });
@@ -193,47 +343,28 @@ export async function chatGPTWithFinishReason(
     ? [...chatHistory, { role: "user" as const, content: prompt }]
     : [{ role: "user" as const, content: prompt }];
 
-  let lastError: unknown;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      // temperature is only sent when explicitly requested: newer (reasoning)
-      // models reject non-default values, and upstream no longer sends one.
-      const response = await client.chat.completions.create({
-        model,
-        messages,
-        ...(temperature !== undefined ? { temperature } : {}),
-      });
+  return withRetries(maxRetries, "Retry", async () => {
+    // temperature is only sent when explicitly requested: newer (reasoning)
+    // models reject non-default values, and upstream no longer sends one.
+    const response = await client.chat.completions.create({
+      model,
+      messages,
+      ...(temperature !== undefined ? { temperature } : {}),
+    });
 
-      const choice = response.choices[0];
-      if (!choice) {
-        throw new Error("No response from model");
-      }
-
-      const finishReason =
-        choice.finish_reason === "length" ? "max_output_reached" : "finished";
-
-      return {
-        content: choice.message.content || "",
-        finishReason,
-      };
-    } catch (error) {
-      const status = getErrorStatus(error);
-      if (status !== undefined && NO_RETRY_STATUS.has(status)) {
-        throw error;
-      }
-      lastError = error;
-      console.error(`[Retry ${attempt + 1}/${maxRetries}]`, error);
-      if (attempt < maxRetries - 1) {
-        await sleep(1000 * (attempt + 1)); // Exponential backoff
-      }
+    const choice = response.choices[0];
+    if (!choice) {
+      throw new EmptyChoicesError();
     }
-  }
 
-  throw new LLMRetriesExhausted(
-    `LLM completion failed after ${maxRetries} retries: ${errorMessage(lastError)}`,
-    getErrorStatus(lastError),
-    { cause: lastError }
-  );
+    const finishReason =
+      choice.finish_reason === "length" ? "max_output_reached" : "finished";
+
+    return {
+      content: choice.message.content || "",
+      finishReason,
+    };
+  });
 }
 
 function errorMessage(error: unknown): string {
@@ -318,109 +449,94 @@ async function chatLMStudioNative(options: ChatOptions): Promise<ChatResult> {
     model,
     prompt,
     temperature = 0,
-    maxRetries = 10,
+    maxRetries = INDEX_RETRIES + 1,
   } = options;
 
   const baseUrl = "http://localhost:1234";
-  let lastError: unknown;
-  
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      // Build request body - only include reasoning: "off" if model supports it
-      const body: Record<string, unknown> = {
-        model,
-        input: prompt,
-        temperature,
-      };
-      
-      if (!modelsWithoutReasoning.has(model)) {
-        body.reasoning = "off";
-      }
 
-      const response = await fetch(`${baseUrl}/api/v1/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
+  return withRetries(maxRetries, "LM Studio Retry", async (): Promise<ChatResult> => {
+    // Build request body - only include reasoning: "off" if model supports it
+    const body: Record<string, unknown> = {
+      model,
+      input: prompt,
+      temperature,
+    };
+    
+    if (!modelsWithoutReasoning.has(model)) {
+      body.reasoning = "off";
+    }
 
-      const data = await response.json() as {
-        output?: Array<{ type: string; content?: string }>;
-        message?: string;
-        type?: string;
-        param?: string;
-      };
+    const response = await fetch(`${baseUrl}/api/v1/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
 
-      // Check for errors first
-      if (!response.ok) {
-        // If reasoning not supported, remember this and retry without it
-        if (data.type === "invalid_request" && data.param === "reasoning") {
-          console.log(`[LM Studio] Model ${model} doesn't support reasoning parameter, retrying without it`);
-          modelsWithoutReasoning.add(model);
-          
-          const retryResponse = await fetch(`${baseUrl}/api/v1/chat`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model,
-              input: prompt,
-              temperature,
-            }),
-          });
-          
-          if (!retryResponse.ok) {
-            const retryError = await retryResponse.text();
-            throw httpError(`LM Studio API error on retry: ${retryResponse.status} - ${retryError}`, retryResponse.status);
-          }
-          
-          const retryData = await retryResponse.json() as {
-            output?: Array<{ type: string; content?: string }>;
-          };
-          
-          const messageOutput = retryData.output?.find(o => o.type === "message");
-          return {
-            content: messageOutput?.content || "",
-            finishReason: "finished",
-          };
+    const data = await response.json() as {
+      output?: Array<{ type: string; content?: string }>;
+      message?: string;
+      type?: string;
+      param?: string;
+    };
+
+    // Check for errors first
+    if (!response.ok) {
+      // If reasoning not supported, remember this and retry without it
+      if (data.type === "invalid_request" && data.param === "reasoning") {
+        console.log(`[LM Studio] Model ${model} doesn't support reasoning parameter, retrying without it`);
+        modelsWithoutReasoning.add(model);
+        
+        const retryResponse = await fetch(`${baseUrl}/api/v1/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            input: prompt,
+            temperature,
+          }),
+        });
+        
+        if (!retryResponse.ok) {
+          const retryError = await retryResponse.text();
+          throw httpError(`LM Studio API error on retry: ${retryResponse.status} - ${retryError}`, retryResponse.status, retryResponse.headers);
         }
         
-        throw httpError(`LM Studio API error: ${response.status} - ${data.message || JSON.stringify(data)}`, response.status);
+        const retryData = await retryResponse.json() as {
+          output?: Array<{ type: string; content?: string }>;
+        };
+        
+        const messageOutput = retryData.output?.find(o => o.type === "message");
+        return {
+          content: messageOutput?.content || "",
+          finishReason: "finished",
+        };
       }
-
-      // Extract the message content from the response
-      const messageOutput = data.output?.find(o => o.type === "message");
-      const content = messageOutput?.content || "";
-
-      return {
-        content,
-        finishReason: "finished",
-      };
-    } catch (error) {
-      const status = getErrorStatus(error);
-      if (status !== undefined && NO_RETRY_STATUS.has(status)) {
-        throw error;
-      }
-      lastError = error;
-      console.error(`[LM Studio Retry ${attempt + 1}/${maxRetries}]`, error);
-      if (attempt < maxRetries - 1) {
-        await sleep(1000 * (attempt + 1));
-      }
+      
+      throw httpError(`LM Studio API error: ${response.status} - ${data.message || JSON.stringify(data)}`, response.status, response.headers);
     }
-  }
 
-  throw new LLMRetriesExhausted(
-    `LLM completion failed after ${maxRetries} retries: ${errorMessage(lastError)}`,
-    getErrorStatus(lastError),
-    { cause: lastError }
-  );
+    // Extract the message content from the response
+    const messageOutput = data.output?.find(o => o.type === "message");
+    const content = messageOutput?.content || "";
+
+    return {
+      content,
+      finishReason: "finished",
+    };
+  });
 }
 
-/** Error carrying an HTTP status, so the retry policy can classify it */
-function httpError(message: string, status: number): Error & { status: number } {
-  return Object.assign(new Error(message), { status });
+/** Error carrying an HTTP status and headers, so the retry policy can classify it */
+function httpError(
+  message: string,
+  status: number,
+  headers?: Headers
+): Error & { status: number; headers?: Headers } {
+  return Object.assign(new Error(message), { status, headers });
 }
 
 /**

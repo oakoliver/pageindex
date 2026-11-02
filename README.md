@@ -4,7 +4,7 @@ Vectorless, reasoning-based document indexing for RAG. A TypeScript port of the 
 
 **Scope:** PageIndex retrieval is two steps: build the tree, then have an LLM search it. This package does the first step. Upstream's retrieve-and-chat client is not ported; [Searching the tree](#searching-the-tree) shows how to do the search step yourself.
 
-> **Upstream parity:** the standard (LLM) PDF pipeline and the Markdown pipeline are at parity with upstream PageIndex **v0.2.19** (2026-09-21). Previous baseline: upstream commit `959452d` (2026-03-04). Upstream-only surfaces that are not ported: PageIndex Flash (the deterministic PDF parser), the LLM-driven `optimize_tree` expand pass, the local/cloud SDK clients, chat/agent tools, MCP bridge and LiteLLM provider routing (this port stays on OpenAI-compatible endpoints).
+> **Upstream parity:** the standard (LLM) PDF pipeline, the Markdown pipeline and upstream's node-navigation helpers are at parity with upstream PageIndex **v0.5.0** (2026-10-29). Previous baselines: v0.2.19 (2026-09-21), commit `959452d` (2026-03-04). Upstream-only surfaces that are not ported: PageIndex Flash (the layout-based PDF parser), the LLM-driven `optimize_tree` expand pass, the local/cloud SDK clients, chat/agent tools, MCP bridge, LiteLLM provider routing and Claude Code subscriptions (this port stays on OpenAI-compatible endpoints), and token-usage reporting. Two older differences remain in the PDF pipeline: a TOC without page numbers is used directly, and there is no fallback between modes on low verification accuracy. Every upstream change and its disposition is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/oakoliver/pageindex/main/assets/tree.gif" alt="Terminal recording: bun examples/tree.ts indexes a 220-line sample design document with mdToTree and no LLM calls: pipeline stage timings, document stats (38 headings, 38 tree nodes, depth 4), then the tree with node ids, heading levels, line ranges, token estimates and a map of where each section sits, with mergeTree folding small subtrees into keyItems (38 to 11 nodes)" width="760">
@@ -153,7 +153,7 @@ pageindex --pdf scanned.pdf --ocr --lmstudio --model qwen/qwen3-vl-30b
 pageindex --md README.md --add-node-summary --add-doc-description --thinning
 
 # Separate models for indexing and summaries
-pageindex --pdf document.pdf --index-model gpt-5.6-luna --summary-model gpt-4.1-mini
+pageindex --pdf document.pdf --index-model gpt-6-luna --summary-model gpt-4.1-mini
 
 # See all options
 pageindex --help
@@ -172,13 +172,13 @@ const pageIndex = new PageIndex(options);
 ```
 
 **Options:**
-- `model`: Model used to index the document (default: "gpt-5.6-luna", upstream's default index model)
+- `model`: Model used to index the document (default: "gpt-6-luna", upstream's default index model)
 - `summaryModel`: Model for node summaries and the document description (default: `model`)
 - `apiKey`: OpenAI API key (default: from OPENAI_API_KEY env var)
 - `baseUrl`: Custom API base URL (for LM Studio, Ollama, etc.)
 - `tocCheckPageNum`: Pages to check for TOC (default: 20)
-- `maxPageNumEachNode`: Max pages per node (default: 10)
-- `maxTokenNumEachNode`: Max tokens per node (default: 20000)
+- `maxPageNumEachNode`: A leaf longer than this many pages, and of at least `maxTokenNumEachNode` tokens, is split with the LLM (default: 10)
+- `maxTokenNumEachNode`: Token threshold for that split (default: 20000)
 - `addNodeId`: Add node IDs (default: true)
 - `addNodeSummary`: Generate summaries with the LLM (default: true for PDFs, false for Markdown; see below)
 - `addDocDescription`: Add document description (default: false)
@@ -227,10 +227,10 @@ interface PageIndexResult {
 interface TreeNode {
   title: string;
   nodeId?: string;
-  startIndex?: number;
-  endIndex?: number;
+  startIndex?: number; // PDF: first page
+  endIndex?: number; // PDF: last page; a parent's range covers its whole section
   summary?: string;
-  prefixSummary?: string;
+  prefixSummary?: string; // Markdown parents
   text?: string;
   lineNum?: number;
   keyItems?: string[]; // titles folded into this node by the tree merge pass
@@ -238,12 +238,20 @@ interface TreeNode {
 }
 ```
 
-### Behavior notes (upstream v0.2.19)
+### Behavior notes (upstream v0.5.0)
+
+- **Intro nodes**: in PDF trees, a parent whose first child starts on a later page gets an `"<title> (intro)"` child holding those opening pages. A parent's `startIndex`/`endIndex` cover its whole section; with `addNodeText`, its `text` is only its own pages (empty when an intro holds them).
+- **Bottom-up summaries** (PDF): a leaf is summarized from its own pages, a parent from its opening pages plus its children's summaries, deepest nodes first, up to 64 calls at a time. A leaf shorter than a summary (about 200 tokens) keeps its own text. Prompts ask for JSON and at most 150 words; a node left unsummarized falls back to its subsection titles or its text. With summaries on, the document description reads only the top level. Markdown summaries are unchanged (upstream's `md_to_tree` did not change).
+- **Large-node split** (PDF): a leaf longer than `maxPageNumEachNode` pages and of at least `maxTokenNumEachNode` tokens is re-indexed with the LLM and split into children.
+- **Retries** follow the official OpenAI SDK rule, as upstream: network failures and 408/409/429/5xx are retried, up to 10 attempts, waiting the server's `Retry-After` (up to 60 s) or backing off exponentially to 30 s; any other error fails at once.
+- **Node navigation**: `getNode`, `getNodeParent`, `getNodePath` and `getNodeMap` walk a tree (`result.structure`) locally.
+
+Earlier behavior, from the v0.2.19 sync:
 
 - **Prompt-injection hardening**: in the PDF structure prompts (TOC detection, extraction, verification and fixing), document text is sanitized (known injection phrases are redacted) and wrapped in `<user_document>` delimiters, and those prompts carry a hardening preamble. As upstream, the node-summary and document-description prompts, used for both PDFs and Markdown, send the text without that wrapping.
 - **Physical index validation**: page markers returned by the LLM are dropped when they are not in the chunk the model saw or fall outside the document; TOC entries that end up unplaced are left out of the tree.
 - **Tree merge**: after the tree is built, subtrees whose structure does not beat a linear scan of their pages are collapsed into their parent; the removed titles are kept as `keyItems`.
-- **Fail-loud LLM errors**: 400/401/403/404 are not retried; exhausted retries throw `LLMRetriesExhausted` instead of returning `"Error"`. Bad credentials or a missing model fail the run; per-prompt failures (e.g. context overflow) leave an empty summary/description; if every summary comes back empty the run fails.
+- **Fail-loud LLM errors**: 400/401/403/404 are not retried; exhausted retries throw `LLMRetriesExhausted` instead of returning `"Error"`. Bad credentials, a missing model or a call out of retries fail the run; per-prompt failures (e.g. context overflow) leave a fallback summary or an empty description; if every summary call fails or comes back empty the run fails.
 - `temperature` is no longer sent unless you pass one explicitly; `CHATGPT_API_KEY` is accepted as a deprecated alias for `OPENAI_API_KEY`.
 
 ## Searching the tree
@@ -279,7 +287,9 @@ walk(structure);
 const context = node_ids.map((id: string) => byId.get(id)?.text ?? "").join("\n\n");
 ```
 
-A runnable version is in [`examples/tree-search.ts`](examples/tree-search.ts).
+`getNodeMap(structure)` builds the same id-to-node map, and `getNodePath` /
+`getNodeParent` give a node's ancestors. A runnable version is in
+[`examples/tree-search.ts`](examples/tree-search.ts).
 For long documents, search level by level (expand only the chosen nodes'
 children) instead of sending the whole outline at once.
 
@@ -319,8 +329,8 @@ PageIndex uses LLM reasoning to:
 1. **Detect Table of Contents**: Scans initial pages for TOC
 2. **Extract Structure**: Parses TOC or generates structure from content
 3. **Map Page Numbers**: Associates logical page numbers with physical pages
-4. **Build Tree**: Creates hierarchical tree structure
-5. **Generate Summaries**: Creates summaries for each node (optional)
+4. **Build Tree**: Creates hierarchical tree structure, with intro nodes, splitting large leaves
+5. **Generate Summaries**: Summarizes each node bottom-up (optional)
 
 This approach provides human-like document understanding without the limitations of vector-based retrieval.
 

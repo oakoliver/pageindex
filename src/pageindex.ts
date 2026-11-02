@@ -10,16 +10,24 @@ import {
   processNoToc,
   processTocNoPageNumbers,
   processTocWithPageNumbers,
-  buildTree,
+  processLargeNodeRecursively,
   addNodeText,
-  generateSummariesForStructure,
   generateDocDescription,
   verifyToc,
   fixIncorrectToc,
   PDF_KEY_ORDER,
   type TreeOptions,
 } from "./tree.js";
-import { convertPhysicalIndexToInt, formatStructure } from "./utils.js";
+import { summarizeTree, STANDARD_SUMMARY_CONCURRENCY } from "./summary.js";
+import { addIntroNodes, mergeTree } from "./tree-optimize.js";
+import {
+  addPrefaceIfNeeded,
+  convertPhysicalIndexToInt,
+  coverSubtreeRanges,
+  formatStructure,
+  postProcessing,
+  writeNodeId,
+} from "./utils.js";
 import { DEFAULT_INDEX_MODEL } from "./types.js";
 import type { PageIndexOptions, PageIndexResult, TreeNode, TocItem, ExtractionMode } from "./types.js";
 
@@ -200,9 +208,6 @@ export class PageIndex {
     // Convert physical_index strings to integers
     tocItems = convertPhysicalIndexToInt(tocItems) as TocItem[];
 
-    // Add appear_start field
-    tocItems = await checkTitleAppearanceInStartConcurrent(tocItems, pages, this.options);
-
     // Verify TOC
     this.log("Verifying TOC...");
     const { incorrect } = await verifyToc(pages, tocItems, startIndex, this.options);
@@ -221,28 +226,57 @@ export class PageIndex {
     }
 
     // Items without a (valid) physical index cannot be placed in the tree
-    tocItems = tocItems.filter((item) => item.physicalIndex !== undefined && item.physicalIndex !== null);
+    const placed = (items: TocItem[]) =>
+      items.filter((item) => item.physicalIndex !== undefined && item.physicalIndex !== null);
 
-    // Build tree structure
-    const tree = buildTree(tocItems, endPhysicalIndex, this.options);
+    // Upstream tree_parser: preface, then where each section opens its page
+    tocItems = addPrefaceIfNeeded(placed(tocItems));
+    tocItems = await checkTitleAppearanceInStartConcurrent(tocItems, pages, this.options);
 
-    // Add node text if requested
-    if (this.options.addNodeText || this.options.addNodeSummary) {
+    // Page ranges and intro nodes; split large leaves (LLM), which can turn a
+    // leaf into a parent that opens before its first child
+    const tree = addIntroNodes(postProcessing(placed(tocItems), endPhysicalIndex));
+    await Promise.all(
+      tree.map((node) => processLargeNodeRecursively(node, pages, this.options))
+    );
+    addIntroNodes(tree);
+
+    // Collapse subtrees that do not beat a linear scan (deterministic, no LLM)
+    mergeTree(tree);
+
+    if (this.options.addNodeId) {
+      writeNodeId(tree);
+    }
+
+    // Add node text if requested (each node's own pages)
+    if (this.options.addNodeText) {
       addNodeText(tree, pages);
     }
 
-    // Generate summaries if requested
+    // Generate summaries if requested: bottom-up, a parent's from its
+    // opening pages and its children's summaries
     if (this.options.addNodeSummary) {
       this.log("Generating summaries...");
-      await generateSummariesForStructure(tree, this.options);
+      await summarizeTree(tree, pages, {
+        model: this.options.summaryModel || this.options.model,
+        apiKey: this.options.apiKey,
+        baseUrl: this.options.baseUrl,
+        concurrency: STANDARD_SUMMARY_CONCURRENCY,
+      });
     }
 
-    // Generate document description if requested
+    // Generate document description if requested. With summaries, the top
+    // level already covers the whole document.
     let docDescription: string | undefined;
     if (this.options.addDocDescription) {
       this.log("Generating document description...");
-      docDescription = await generateDocDescription(tree, this.options);
+      docDescription = await generateDocDescription(tree, this.options, {
+        topLevelOnly: this.options.addNodeSummary,
+      });
     }
+
+    // A parent's range covers its whole section in the output
+    coverSubtreeRanges(tree);
 
     // Final key order; text is dropped unless requested in output
     const keyOrder = this.options.addNodeText

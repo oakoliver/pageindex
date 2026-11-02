@@ -393,11 +393,11 @@ export function postProcessing(
 
     if (i < structure.length - 1) {
       const nextItem = structure[i + 1] as TocItem & { appearStart?: string };
-      if (nextItem.appearStart === "yes") {
-        item.endIndex = (nextItem.physicalIndex || 0) - 1;
-      } else {
-        item.endIndex = nextItem.physicalIndex;
-      }
+      const nextStart = nextItem.physicalIndex || 0;
+      // A section ends the page before the next one when that one opens its
+      // page, else on its page; never before it starts (upstream v0.2.22)
+      const end = nextItem.appearStart === "yes" ? nextStart - 1 : nextStart;
+      item.endIndex = item.startIndex !== undefined ? Math.max(item.startIndex, end) : end;
     } else {
       item.endIndex = endPhysicalIndex;
     }
@@ -554,14 +554,17 @@ export function formatStructure(
 }
 
 /**
- * Create clean structure for document description (exclude text)
+ * Create clean structure for document description (exclude text).
+ * With `topLevelOnly`, children are dropped: a tree whose parent summaries
+ * cover their subtrees describes itself by its top level (upstream v0.4.0).
  */
 export function createCleanStructureForDescription(
-  structure: TreeNode | TreeNode[]
+  structure: TreeNode | TreeNode[],
+  topLevelOnly: boolean = false
 ): TreeNode | TreeNode[] {
   if (Array.isArray(structure)) {
     return structure.map(
-      (item) => createCleanStructureForDescription(item) as TreeNode
+      (item) => createCleanStructureForDescription(item, topLevelOnly) as TreeNode
     );
   }
 
@@ -580,7 +583,9 @@ export function createCleanStructureForDescription(
     }
   }
 
-  if (structure.nodes && structure.nodes.length > 0) {
+  // topLevelOnly drops the children, for trees whose parent summaries
+  // already cover their subtrees
+  if (structure.nodes && structure.nodes.length > 0 && !topLevelOnly) {
     cleanNode.nodes = createCleanStructureForDescription(
       structure.nodes
     ) as TreeNode[];
@@ -743,4 +748,175 @@ export function normalizeTocItems(entries: unknown): TocItem[] {
     items.push(item);
   }
   return items;
+}
+
+// ===================== Intro nodes and own pages (upstream v0.2.21) =====================
+
+/** Suffix of the node holding the pages a parent opens with, before its first child */
+export const INTRO_SUFFIX = " (intro)";
+
+/** The title of a parent's intro node; a split intro keeps its own */
+export function introTitle(title: string | undefined | null): string {
+  let result = (title ?? "").trim();
+  if (result && !result.endsWith(INTRO_SUFFIX)) {
+    result += INTRO_SUFFIX;
+  }
+  return result || "Intro";
+}
+
+/** Whether child is the intro node holding parent's opening pages */
+export function isIntro(parent: TreeNode, child: TreeNode): boolean {
+  return child.startIndex === parent.startIndex && child.title === introTitle(parent.title);
+}
+
+/**
+ * The first and last page of a node's own text. A parent's runs onto the page
+ * its first child starts on, where that child's heading may sit mid-page; it
+ * has none (end undefined) when its intro holds those pages.
+ */
+export function ownPages(node: TreeNode): [number | undefined, number | undefined] {
+  const start = node.startIndex;
+  let end = node.endIndex;
+  const children = node.nodes || [];
+  if (children.length > 0) {
+    const first = children[0]!.startIndex;
+    if (isIntro(node, children[0]!)) {
+      end = undefined;
+    } else if (end !== undefined && first !== undefined) {
+      end = Math.min(end, first);
+    }
+  }
+  return [start, end];
+}
+
+/** Text of pages start..end (1-based, inclusive); "" when either end is missing */
+export function getTextOfPdfPages(
+  pages: Array<{ text: string }>,
+  start: number | undefined,
+  end: number | undefined
+): string {
+  if (start === undefined || start === null || end === undefined || end === null) return "";
+  let text = "";
+  for (let i = start - 1; i < end && i < pages.length; i++) {
+    text += pages[i]?.text || "";
+  }
+  return text;
+}
+
+/** Text of pages start..end, each wrapped in its physical_index markers */
+export function getTextOfPdfPagesWithLabels(
+  pages: Array<{ text: string }>,
+  start: number | undefined,
+  end: number | undefined
+): string {
+  if (start === undefined || start === null || end === undefined || end === null) return "";
+  let text = "";
+  for (let i = start - 1; i < end && i < pages.length; i++) {
+    text += `<physical_index_${i + 1}>\n${pages[i]?.text || ""}\n<physical_index_${i + 1}>\n`;
+  }
+  return text;
+}
+
+/** Widen every parent's range to cover its whole subtree (mutates, returns the input) */
+export function coverSubtreeRanges<T extends TreeNode | TreeNode[]>(structure: T): T {
+  const nodes: TreeNode[] = Array.isArray(structure) ? structure : [structure as TreeNode];
+  for (const node of nodes) {
+    const children = node.nodes || [];
+    if (children.length === 0) continue;
+    coverSubtreeRanges(children);
+    const starts = [node.startIndex, ...children.map((c) => c.startIndex)].filter(
+      (n): n is number => typeof n === "number"
+    );
+    const ends = [node.endIndex, ...children.map((c) => c.endIndex)].filter(
+      (n): n is number => typeof n === "number"
+    );
+    if (starts.length > 0) node.startIndex = Math.min(...starts);
+    if (ends.length > 0) node.endIndex = Math.max(...ends);
+  }
+  return structure;
+}
+
+// ===================== Node navigation (upstream v0.2.21) =====================
+
+/** A node range as createNodeMapping reports it */
+export interface NodeMapping {
+  node: TreeNode;
+  startIndex?: number;
+  endIndex?: number;
+}
+
+function requireNodeTree(tree: unknown): void {
+  const ok =
+    Array.isArray(tree) || (tree !== null && typeof tree === "object" && "nodeId" in (tree as object));
+  if (!ok) {
+    const kind = tree === null ? "null" : Array.isArray(tree) ? "array" : typeof tree;
+    throw new TypeError(
+      "tree must be a node list such as result.structure or a single node, " +
+        `not the whole result object; got ${kind}`
+    );
+  }
+}
+
+/** [top-level ancestor, ..., node] for nodeId; [] if absent */
+export function getNodePath(tree: TreeNode | TreeNode[], nodeId: string): TreeNode[] {
+  requireNodeTree(tree);
+  if (typeof nodeId !== "string") {
+    throw new TypeError(`nodeId must be a string like '0007', got ${JSON.stringify(nodeId)}`);
+  }
+  for (const node of Array.isArray(tree) ? tree : [tree]) {
+    if (node.nodeId === nodeId) return [node];
+    const path = getNodePath(node.nodes || [], nodeId);
+    if (path.length > 0) return [node, ...path];
+  }
+  return [];
+}
+
+/** The node with nodeId, or undefined */
+export function getNode(tree: TreeNode | TreeNode[], nodeId: string): TreeNode | undefined {
+  const path = getNodePath(tree, nodeId);
+  return path[path.length - 1];
+}
+
+/** The parent of nodeId; undefined for a top-level or absent node */
+export function getNodeParent(tree: TreeNode | TreeNode[], nodeId: string): TreeNode | undefined {
+  const path = getNodePath(tree, nodeId);
+  return path.length > 1 ? path[path.length - 2] : undefined;
+}
+
+/** {nodeId: node} for every node in tree */
+export function getNodeMap(tree: TreeNode | TreeNode[]): Record<string, TreeNode> {
+  requireNodeTree(tree);
+  return createNodeMapping(tree) as Record<string, TreeNode>;
+}
+
+/**
+ * Map nodeId to node; with includePageRanges, to {node, startIndex, endIndex}:
+ * the node's own range when it carries an endIndex, else it ends where the
+ * next node in reading order starts (maxPage for the last node).
+ */
+export function createNodeMapping(
+  tree: TreeNode | TreeNode[],
+  includePageRanges: boolean = false,
+  maxPage?: number
+): Record<string, TreeNode> | Record<string, NodeMapping> {
+  const all = structureToList(tree);
+  if (!includePageRanges) {
+    const mapping: Record<string, TreeNode> = {};
+    for (const node of all) {
+      if (node.nodeId) mapping[node.nodeId] = node;
+    }
+    return mapping;
+  }
+  const mapping: Record<string, NodeMapping> = {};
+  all.forEach((node, i) => {
+    if (!node.nodeId) return;
+    const endIndex =
+      node.endIndex !== undefined
+        ? node.endIndex
+        : i + 1 < all.length
+          ? all[i + 1]!.startIndex
+          : maxPage;
+    mapping[node.nodeId] = { node, startIndex: node.startIndex, endIndex };
+  });
+  return mapping;
 }

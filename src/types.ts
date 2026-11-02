@@ -8,19 +8,19 @@ export type ExtractionMode = "text" | "ocr";
 /** OCR prompt type for GLM-OCR */
 export type OcrPromptType = "text" | "formula" | "table";
 
-/** Default model used to index documents (structure and summaries), as in upstream PageIndex */
-export const DEFAULT_INDEX_MODEL = "gpt-5.6-luna";
+/** Default model used to index documents (structure and summaries), as in upstream PageIndex (v0.4.0+) */
+export const DEFAULT_INDEX_MODEL = "gpt-6-luna";
 
 export interface PageIndexOptions {
-  /** Model used to index the document (default: gpt-5.6-luna) */
+  /** Model used to index the document (default: gpt-6-luna) */
   model?: string;
   /** Model for node summaries and the document description (default: `model`) */
   summaryModel?: string;
   /** Number of pages to check for TOC (default: 20) */
   tocCheckPageNum?: number;
-  /** Max pages per node before splitting (default: 10) */
+  /** A PDF leaf longer than this many pages (and maxTokenNumEachNode tokens) is split with the LLM (default: 10) */
   maxPageNumEachNode?: number;
-  /** Max tokens per node before splitting (default: 20000) */
+  /** A PDF leaf of at least this many tokens (and over maxPageNumEachNode pages) is split with the LLM (default: 20000) */
   maxTokenNumEachNode?: number;
   /** Add node IDs to output (default: true) */
   addNodeId?: boolean;
@@ -67,10 +67,14 @@ export interface MarkdownOptions extends PageIndexOptions {
 }
 
 export interface TreeNode {
+  /** Section title; a parent's opening pages form a "<title> (intro)" child (PDF) */
   title: string;
   nodeId?: string;
+  /** First page (PDF) */
   startIndex?: number;
+  /** Last page (PDF); a parent's range covers its whole section */
   endIndex?: number;
+  /** PDF: a leaf's summary of its pages, a parent's of its whole section; Markdown: leaves */
   summary?: string;
   prefixSummary?: string;
   text?: string;

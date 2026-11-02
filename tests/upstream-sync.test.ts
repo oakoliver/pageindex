@@ -1,5 +1,6 @@
 /**
- * Tests for behavior ported from upstream PageIndex (baseline 959452d -> v0.2.19).
+ * Tests for behavior ported from upstream PageIndex (baseline 959452d -> v0.2.19),
+ * updated where v0.5.0 changed it (see upstream-sync-0.5.test.ts).
  * The LLM is replaced by a scripted fake client; no API keys or network needed.
  */
 
@@ -649,7 +650,13 @@ describe("mergeTree", () => {
     expect(tree.map((n) => n.title)).toEqual(["Intro", "Body"]);
     expect(tree[0]!.keyItems).toEqual(["Background"]);
     expect(tree[0]!.nodes).toBeUndefined();
-    expect(tree[1]!.nodes?.map((n) => n.nodeId)).toEqual(["0002", "0003"]);
+    // upstream v0.2.21: Body opens on page 2, before its first child, so its
+    // opening pages get an intro node, numbered like any other
+    expect(tree[1]!.nodes?.map((n) => [n.title, n.nodeId])).toEqual([
+      ["Body (intro)", "0002"],
+      ["Part A", "0003"],
+      ["Part B", "0004"],
+    ]);
     expect(Object.keys(tree[0]!)).toEqual(["title", "nodeId", "startIndex", "endIndex", "keyItems"]);
   });
 });
@@ -711,7 +718,7 @@ describe("PageIndex pipeline", () => {
       "Introduction\nWelcome.",
       "Methods\nWe did things.",
       "Results\nNumbers.",
-      "Results continued."
+      "Results continued. ".repeat(60)
     );
     useFakeLLM((prompt, call) => {
       if (prompt.includes("toc_detected")) return '{"toc_detected": "no"}';
@@ -725,23 +732,28 @@ describe("PageIndex pipeline", () => {
       }
       if (prompt.includes("start_begin")) return '{"start_begin": "yes"}';
       if (prompt.includes('"answer"')) return '{"answer": "yes"}';
-      if (prompt.includes("main points covered")) return `summary by ${call.model}`;
+      if (prompt.includes("You are given a text chunk")) return `{"summary": "summary by ${call.model}"}`;
       return "{}";
     });
 
-    const result = await new PageIndex({ summaryModel: "summary-model" }).processPdfPages(pages, "doc");
-
-    const indexModels = new Set(
-      calls.filter((c) => !c.prompt.includes("main points covered")).map((c) => c.model)
+    const result = await new PageIndex({ summaryModel: "summary-model", logger: () => {} }).processPdfPages(
+      pages,
+      "doc"
     );
+
+    const isSummary = (c: Call) => c.prompt.includes("You are given a text chunk");
+    const indexModels = new Set(calls.filter((c) => !isSummary(c)).map((c) => c.model));
     expect(indexModels).toEqual(new Set([DEFAULT_INDEX_MODEL]));
-    expect(DEFAULT_INDEX_MODEL).toBe("gpt-5.6-luna");
+    expect(DEFAULT_INDEX_MODEL).toBe("gpt-6-luna");
+    expect(new Set(calls.filter(isSummary).map((c) => c.model))).toEqual(new Set(["summary-model"]));
 
     const titles = result.structure.map((n) => n.title);
     // the out-of-range marker was nullified, so the entry is dropped instead of trusted
     expect(titles).toEqual(["Introduction", "Methods", "Results"]);
     expect(result.structure[2]).toMatchObject({ startIndex: 3, endIndex: 4 });
-    expect(result.structure[0]!.summary).toBe("summary by summary-model");
+    // a leaf shorter than a summary keeps its own text; a longer one is summarized
+    expect(result.structure[0]!.summary).toBe("Introduction\nWelcome.");
+    expect(result.structure[2]!.summary).toBe("summary by summary-model");
     expect(result.structure[0]!.text).toBeUndefined();
     expect(Object.keys(result.structure[0]!)).toEqual(["title", "nodeId", "startIndex", "endIndex", "summary"]);
   });
